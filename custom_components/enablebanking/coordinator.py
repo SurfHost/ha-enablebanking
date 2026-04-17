@@ -52,6 +52,7 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
         )
         self.client = client
         self._warned_expiry = False
+        self.last_refresh: datetime | None = None
 
     async def _async_update_data(self) -> EnableBankingData:
         """Fetch all account balances through Enable Banking."""
@@ -68,6 +69,7 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
 
         consent_expires_at = self._parse_consent_expires()
         self._maybe_warn_expiry(consent_expires_at)
+        self.last_refresh = utcnow()
 
         return EnableBankingData(
             accounts=accounts,

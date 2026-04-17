@@ -239,6 +239,11 @@ class EnableBankingClient:
         out: dict[str, AccountBalance] = {}
         for uid in uids:
             meta = metadata.get(uid, {})
+            _LOGGER.debug(
+                "metadata for %s: keys=%s",
+                uid[:8],
+                sorted(meta.keys()) if meta else "<missing>",
+            )
             iban = _account_iban(meta)
             name = (
                 meta.get("name")

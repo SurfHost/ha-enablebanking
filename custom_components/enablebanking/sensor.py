@@ -92,8 +92,12 @@ class EnableBankingBalanceSensor(EnableBankingEntity, SensorEntity):
     @property
     def name(self) -> str | None:
         account = self._current_account
-        if account is not None and account.iban:
+        if account is None:
+            return "Balance"
+        if account.iban:
             return f"Balance {account.iban}"
+        if account.name:
+            return f"Balance {account.name}"
         return "Balance"
 
     @property
@@ -121,7 +125,7 @@ class EnableBankingBalanceSensor(EnableBankingEntity, SensorEntity):
             return None
 
         attrs = self.entity_description.account_attrs_fn(account)
-        attrs["last_updated"] = self.coordinator.last_update_success_time
+        attrs["last_updated"] = self.coordinator.last_refresh
         attrs["aspsp"] = self.coordinator.config_entry.data.get(CONF_ASPSP_NAME)
 
         data = self.coordinator.data
