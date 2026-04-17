@@ -7,10 +7,6 @@ A Home Assistant custom integration that shows the balance of your **ASN Bank** 
 
 The integration does not talk to ASN's PSD2 API directly (that requires an eIDAS QWAC certificate and TPP registration with De Nederlandsche Bank — not realistic for hobbyists). Instead it uses **[Enable Banking](https://enablebanking.com/)** as a licensed TPP aggregator. Enable Banking offers a free tier for personal use, which is plenty for a single dashboard sensor polled four times a day.
 
-## Why not dogmatic69 / GoCardless?
-
-[dogmatic69/open-banking-homeassistant](https://github.com/dogmatic69/open-banking-homeassistant) wraps the GoCardless Bank Account Data API (formerly Nordigen). That was the obvious choice until July 2025, when GoCardless [closed new signups](https://bankaccountdata.gocardless.com/new-signups-disabled). Existing accounts still work, but nobody new can register — so that integration has become installable-but-useless for fresh users. Enable Banking is the remaining aggregator that still onboards individuals and has a free personal tier covering de Volksbank.
-
 ## Features
 
 - Balance sensor per ASN/SNS/RegioBank account the Enable Banking session exposes
