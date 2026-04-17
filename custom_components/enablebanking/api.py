@@ -207,9 +207,18 @@ class EnableBankingClient:
     async def async_get_all_balances(self) -> dict[str, AccountBalance]:
         """Return a snapshot of every account in the session.
 
-        The mapping key is the Enable Banking account_id (UUID), which is
-        stable across account renames. Accounts without a usable balance
-        type are silently skipped.
+        The mapping key is the Enable Banking account UID (UUID), stable
+        across account renames. Accounts without a usable balance type are
+        silently skipped.
+
+        Session payload shape (observed for N26 and similar ASPSPs):
+            {
+              "accounts": ["<uid>", "<uid>", ...],
+              "accounts_data": [{"uid": "<uid>", "account_id": {"iban": ...}, ...}, ...],
+              ...
+            }
+        Some ASPSPs instead return rich dicts in ``accounts`` directly — this
+        implementation handles both.
         """
         session = await self.async_get_session()
         _LOGGER.debug(
@@ -218,74 +227,30 @@ class EnableBankingClient:
             session.get("status"),
         )
 
-        account_summaries = session.get("accounts")
-        if account_summaries is None:
-            _LOGGER.warning(
-                "Session response has no 'accounts' key; top-level keys were %s",
-                sorted(session.keys()),
-            )
+        uids, metadata = _collect_accounts(session)
+        _LOGGER.debug(
+            "Resolved %d account uid(s); metadata entries: %d",
+            len(uids),
+            len(metadata),
+        )
+        if not uids:
             return {}
-        if not isinstance(account_summaries, list):
-            _LOGGER.warning(
-                "Session 'accounts' is %s, expected list — full value: %r",
-                type(account_summaries).__name__,
-                account_summaries,
-            )
-            return {}
-        _LOGGER.debug("Session lists %d account(s)", len(account_summaries))
 
         out: dict[str, AccountBalance] = {}
-        for idx, summary in enumerate(account_summaries):
-            if not isinstance(summary, dict):
-                _LOGGER.debug(
-                    "account[%d] is %s (%r) — skipping",
-                    idx,
-                    type(summary).__name__,
-                    summary,
-                )
-                continue
-            _LOGGER.debug(
-                "account[%d] keys=%s uid=%r",
-                idx,
-                sorted(summary.keys()),
-                summary.get("uid"),
-            )
-
-            account_id = summary.get("uid") or summary.get("account_id")
-            if isinstance(account_id, dict):
-                # Some ASPSPs only return {"iban": "..."} here and no uid.
-                # Without a uid we cannot call /accounts/{id}/balances.
-                _LOGGER.warning(
-                    "account[%d] has no 'uid'; got account_id=%r — cannot fetch "
-                    "balances without a stable ID",
-                    idx,
-                    account_id,
-                )
-                continue
-            if not account_id:
-                _LOGGER.warning(
-                    "account[%d] has no usable identifier; keys=%s",
-                    idx,
-                    sorted(summary.keys()),
-                )
-                continue
-
-            iban = (
-                (summary.get("account_id") or {}).get("iban")
-                if isinstance(summary.get("account_id"), dict)
-                else summary.get("iban", "")
-            ) or ""
-
+        for uid in uids:
+            meta = metadata.get(uid, {})
+            iban = _account_iban(meta)
             name = (
-                summary.get("name")
-                or summary.get("account_name")
-                or summary.get("product")
+                meta.get("name")
+                or meta.get("account_name")
+                or meta.get("product")
                 or iban
+                or uid[:8]
             )
-            product = summary.get("product")
+            product = meta.get("product")
 
             try:
-                balances = await self.async_get_account_balances(account_id)
+                balances = await self.async_get_account_balances(uid)
             except EnableBankingSessionError:
                 raise
             except EnableBankingAuthenticationError:
@@ -293,12 +258,13 @@ class EnableBankingClient:
             except EnableBankingConnectionError:
                 raise
             except EnableBankingAPIError as err:
-                _LOGGER.warning("Skipping account %s (%s): %s", name, account_id, err)
+                _LOGGER.warning("Skipping account %s (%s): %s", name, uid, err)
                 continue
 
             _LOGGER.debug(
-                "account %s returned %d balance objects, types=%s",
-                account_id,
+                "account %s (%s) → %d balance object(s), types=%s",
+                uid[:8],
+                iban or name,
                 len(balances),
                 [b.get("balance_type") for b in balances if isinstance(b, dict)],
             )
@@ -306,9 +272,9 @@ class EnableBankingClient:
             picked = _pick_preferred_balance(balances)
             if picked is None:
                 _LOGGER.warning(
-                    "No usable balance for account %s (%s); raw balances=%r",
+                    "No usable balance for %s (%s); raw balances=%r",
                     name,
-                    account_id,
+                    uid,
                     balances,
                 )
                 continue
@@ -318,14 +284,12 @@ class EnableBankingClient:
                 amount = float(amount_obj.get("amount"))
             except (TypeError, ValueError):
                 _LOGGER.warning(
-                    "Could not parse amount for account %s; picked=%r",
-                    account_id,
-                    picked,
+                    "Could not parse amount for %s; picked=%r", uid, picked
                 )
                 continue
 
-            out[account_id] = AccountBalance(
-                account_id=account_id,
+            out[uid] = AccountBalance(
+                account_id=uid,
                 iban=iban,
                 name=str(name),
                 product=product if isinstance(product, str) else None,
@@ -337,6 +301,65 @@ class EnableBankingClient:
 
         _LOGGER.debug("async_get_all_balances produced %d account balance(s)", len(out))
         return out
+
+
+def _collect_accounts(
+    session: dict[str, Any],
+) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """Normalise the session payload into (uids, metadata-by-uid).
+
+    Enable Banking ASPSPs differ in shape:
+      - Most (e.g. N26) put bare UID strings in ``accounts`` and the rich
+        metadata in ``accounts_data``.
+      - A few older/alternative shapes put the full dicts in ``accounts``
+        directly.
+    ``accounts_data`` may itself be a list of dicts (each keyed by ``uid``)
+    or a dict keyed by uid — handle both.
+    """
+    metadata: dict[str, dict[str, Any]] = {}
+
+    accounts_data = session.get("accounts_data")
+    if isinstance(accounts_data, list):
+        for item in accounts_data:
+            if not isinstance(item, dict):
+                continue
+            uid = item.get("uid") or item.get("account_uid") or item.get("id")
+            if isinstance(uid, str) and uid:
+                metadata[uid] = item
+    elif isinstance(accounts_data, dict):
+        for uid, item in accounts_data.items():
+            if isinstance(uid, str) and isinstance(item, dict):
+                metadata[uid] = item
+
+    uids: list[str] = []
+    accounts = session.get("accounts")
+    if isinstance(accounts, list):
+        for item in accounts:
+            if isinstance(item, str) and item:
+                uids.append(item)
+            elif isinstance(item, dict):
+                uid = item.get("uid") or item.get("id")
+                if isinstance(uid, str) and uid:
+                    uids.append(uid)
+                    metadata.setdefault(uid, item)
+
+    # De-duplicate while preserving order.
+    seen: set[str] = set()
+    uids = [u for u in uids if not (u in seen or seen.add(u))]
+    return uids, metadata
+
+
+def _account_iban(meta: dict[str, Any]) -> str:
+    """Extract an IBAN from the account-metadata dict, tolerating nesting."""
+    account_id = meta.get("account_id")
+    if isinstance(account_id, dict):
+        iban = account_id.get("iban")
+        if isinstance(iban, str) and iban:
+            return iban
+    iban = meta.get("iban")
+    if isinstance(iban, str) and iban:
+        return iban
+    return ""
 
 
 def _pick_preferred_balance(
