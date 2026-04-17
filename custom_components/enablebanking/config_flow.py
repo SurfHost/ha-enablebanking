@@ -79,7 +79,7 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "unknown"
             else:
                 self._jwt = jwt
-                return await self.async_step_aspsp()
+                return await self.async_step_country()
 
         return self.async_show_form(
             step_id="user",
@@ -88,26 +88,48 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     # ------------------------------------------------------------------ #
-    # Step 2: ASPSP + PSU type                                             #
+    # Step 2a: country                                                     #
+    # ------------------------------------------------------------------ #
+
+    async def async_step_country(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Pick a country to filter the bank list."""
+        if user_input is not None:
+            self._aspsp_country = user_input[CONF_ASPSP_COUNTRY]
+            return await self.async_step_aspsp()
+
+        country_options = _build_country_options(self._aspsps)
+        return self.async_show_form(
+            step_id="country",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_ASPSP_COUNTRY): SelectSelector(
+                        SelectSelectorConfig(options=country_options)
+                    ),
+                }
+            ),
+        )
+
+    # ------------------------------------------------------------------ #
+    # Step 2b: ASPSP (filtered by country) + PSU type                      #
     # ------------------------------------------------------------------ #
 
     async def async_step_aspsp(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Pick a bank and PSU type, then initiate the consent flow."""
+        """Pick a bank within the chosen country and its PSU type."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            raw = user_input[CONF_ASPSP_NAME]
-            # Value is "Name|COUNTRY" to keep name + country together.
-            aspsp_name, _, aspsp_country = raw.partition("|")
+            aspsp_name = user_input[CONF_ASPSP_NAME]
             psu_type = user_input[CONF_PSU_TYPE]
 
             http = async_get_clientsession(self.hass)
             client = EnableBankingClient.for_config_flow(http, self._jwt)
             try:
                 auth_url = await client.async_start_auth(
-                    aspsp_name, aspsp_country, psu_type
+                    aspsp_name, self._aspsp_country, psu_type
                 )
             except EnableBankingAuthenticationError:
                 errors["base"] = "invalid_auth"
@@ -118,12 +140,14 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "unknown"
             else:
                 self._aspsp_name = aspsp_name
-                self._aspsp_country = aspsp_country
                 self._psu_type = psu_type
                 self._auth_url = auth_url
                 return await self.async_step_auth()
 
-        aspsp_options = _build_aspsp_options(self._aspsps)
+        in_country = [
+            a for a in self._aspsps if a.get("country") == self._aspsp_country
+        ]
+        aspsp_options = _build_aspsp_options_for_country(in_country)
         psu_options = {PSU_PERSONAL: "Personal", PSU_BUSINESS: "Business"}
 
         return self.async_show_form(
@@ -138,6 +162,7 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                     ),
                 }
             ),
+            description_placeholders={"country": _country_name(self._aspsp_country)},
             errors=errors,
         )
 
@@ -374,25 +399,69 @@ class EnableBankingOptionsFlow(OptionsFlow):
 # ------------------------------------------------------------------ #
 
 
-def _build_aspsp_options(aspsps: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """Build SelectSelector options from the /aspsps response.
+# ISO 3166-1 alpha-2 → human name for the EU/EEA + UK + CH.
+# Unknown codes fall back to the raw two-letter code.
+_COUNTRY_NAMES: dict[str, str] = {
+    "AT": "Austria",
+    "BE": "Belgium",
+    "BG": "Bulgaria",
+    "CH": "Switzerland",
+    "CY": "Cyprus",
+    "CZ": "Czechia",
+    "DE": "Germany",
+    "DK": "Denmark",
+    "EE": "Estonia",
+    "ES": "Spain",
+    "FI": "Finland",
+    "FR": "France",
+    "GB": "United Kingdom",
+    "GR": "Greece",
+    "HR": "Croatia",
+    "HU": "Hungary",
+    "IE": "Ireland",
+    "IS": "Iceland",
+    "IT": "Italy",
+    "LI": "Liechtenstein",
+    "LT": "Lithuania",
+    "LU": "Luxembourg",
+    "LV": "Latvia",
+    "MT": "Malta",
+    "NL": "Netherlands",
+    "NO": "Norway",
+    "PL": "Poland",
+    "PT": "Portugal",
+    "RO": "Romania",
+    "SE": "Sweden",
+    "SI": "Slovenia",
+    "SK": "Slovakia",
+}
 
-    Value is "Name|COUNTRY" so we can round-trip both pieces without a
-    separate field. Label is "Name (COUNTRY)" for readability.
-    """
+
+def _country_name(code: str) -> str:
+    return _COUNTRY_NAMES.get(code, code)
+
+
+def _build_country_options(
+    aspsps: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """One option per country present in the ASPSP list, sorted by display name."""
+    countries = {a["country"] for a in aspsps if a.get("country")}
+    return [
+        {"value": code, "label": f"{_country_name(code)} ({code})"}
+        for code in sorted(countries, key=lambda c: _country_name(c).lower())
+    ]
+
+
+def _build_aspsp_options_for_country(
+    aspsps: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """Bank options for a single country, alphabetical, dedup on name."""
     seen: set[str] = set()
     options: list[dict[str, str]] = []
-    for aspsp in sorted(
-        aspsps,
-        key=lambda a: (a.get("country", ""), a.get("name", "")),
-    ):
+    for aspsp in sorted(aspsps, key=lambda a: a.get("name", "").lower()):
         name = aspsp.get("name", "")
-        country = aspsp.get("country", "")
-        if not name or not country:
+        if not name or name in seen:
             continue
-        key = f"{name}|{country}"
-        if key in seen:
-            continue
-        seen.add(key)
-        options.append({"value": key, "label": f"{name} ({country})"})
+        seen.add(name)
+        options.append({"value": name, "label": name})
     return options

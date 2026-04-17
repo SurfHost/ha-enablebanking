@@ -8,9 +8,16 @@
           "jwt": "JWT (bearer token)"
         }
       },
+      "country": {
+        "title": "Select country",
+        "description": "Which country is the bank in?",
+        "data": {
+          "aspsp_country": "Country"
+        }
+      },
       "aspsp": {
         "title": "Select bank and account type",
-        "description": "Choose the bank you want to connect and whether you are authorising a personal or business account.",
+        "description": "Banks in {country}. Also choose whether this is a personal or business account.",
         "data": {
           "aspsp_name": "Bank",
           "psu_type": "Account type"

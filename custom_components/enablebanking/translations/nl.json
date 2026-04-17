@@ -8,9 +8,16 @@
           "jwt": "JWT (bearer token)"
         }
       },
+      "country": {
+        "title": "Selecteer land",
+        "description": "In welk land zit de bank?",
+        "data": {
+          "aspsp_country": "Land"
+        }
+      },
       "aspsp": {
         "title": "Selecteer bank en rekeningtype",
-        "description": "Kies de bank die je wilt koppelen en of je een persoonlijke of zakelijke rekening autoriseert.",
+        "description": "Banken in {country}. Kies daarnaast of dit een persoonlijke of zakelijke rekening is.",
         "data": {
           "aspsp_name": "Bank",
           "psu_type": "Rekeningtype"
