@@ -1,0 +1,49 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to ASN Bank via Enable Banking",
+        "description": "Paste the JWT (bearer token) for your Enable Banking application and the session ID you received after authorising access at ASN Bank. See the README for how to obtain these.",
+        "data": {
+          "jwt": "JWT (bearer token)",
+          "session_id": "Session ID"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate with Enable Banking",
+        "description": "Your Enable Banking session has expired or been revoked. Start a new authorisation at ASN Bank, then paste the new JWT and session ID here.",
+        "data": {
+          "jwt": "JWT (bearer token)",
+          "session_id": "Session ID"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to Enable Banking",
+      "invalid_auth": "The JWT was rejected — check that it is signed with your application's private key and has not expired.",
+      "invalid_session": "The session ID is unknown, revoked, or expired — re-authorise at ASN Bank and try again.",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This session is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "ASN Bank Balance options",
+        "description": "How often to poll for a new balance. PSD2 caps unattended polling at 4/day per consent, so values below 6 hours (21600 s) are not recommended.",
+        "data": {
+          "scan_interval": "Update interval (seconds)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "balance": {
+        "name": "Balance"
+      }
+    }
+  }
+}

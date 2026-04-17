@@ -1,0 +1,49 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Verbinden met ASN Bank via Enable Banking",
+        "description": "Plak de JWT (bearer token) van je Enable Banking-applicatie en het sessie-ID dat je kreeg nadat je toegang hebt verleend bij ASN Bank. Zie de README voor hoe je deze verkrijgt.",
+        "data": {
+          "jwt": "JWT (bearer token)",
+          "session_id": "Sessie-ID"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Opnieuw authenticeren met Enable Banking",
+        "description": "Je Enable Banking-sessie is verlopen of ingetrokken. Start een nieuwe autorisatie bij ASN Bank en plak dan de nieuwe JWT en het sessie-ID hier.",
+        "data": {
+          "jwt": "JWT (bearer token)",
+          "session_id": "Sessie-ID"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Kan geen verbinding maken met Enable Banking",
+      "invalid_auth": "De JWT werd afgewezen — controleer of deze is ondertekend met de privésleutel van je applicatie en nog niet is verlopen.",
+      "invalid_session": "Het sessie-ID is onbekend, ingetrokken of verlopen — autoriseer opnieuw bij ASN Bank en probeer het nogmaals.",
+      "unknown": "Onbekende fout"
+    },
+    "abort": {
+      "already_configured": "Deze sessie is al geconfigureerd"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "ASN Bank Balance-opties",
+        "description": "Hoe vaak moet het saldo worden opgehaald? PSD2 beperkt onbeheerd pollen tot 4 keer per dag per toestemming, dus waarden onder 6 uur (21600 s) worden afgeraden.",
+        "data": {
+          "scan_interval": "Update-interval (seconden)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "balance": {
+        "name": "Saldo"
+      }
+    }
+  }
+}
