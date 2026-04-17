@@ -4,9 +4,9 @@
   "codeowners": ["@SurfHost"],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/SurfHost/ha-asnbank-balance",
+  "documentation": "https://github.com/SurfHost/ha-enablebanking",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/SurfHost/ha-asnbank-balance/issues",
+  "issue_tracker": "https://github.com/SurfHost/ha-enablebanking/issues",
   "requirements": [],
   "version": "0.2.0"
 }
