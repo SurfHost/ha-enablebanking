@@ -1,0 +1,70 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Enable Banking — application JWT",
+        "description": "Paste the JWT (bearer token) for your Enable Banking application. This authenticates the integration to Enable Banking's API and is used to fetch the list of supported banks.",
+        "data": {
+          "jwt": "JWT (bearer token)"
+        }
+      },
+      "aspsp": {
+        "title": "Select bank and account type",
+        "description": "Choose the bank you want to connect and whether you are authorising a personal or business account.",
+        "data": {
+          "aspsp_name": "Bank",
+          "psu_type": "Account type"
+        }
+      },
+      "auth": {
+        "title": "Authorise at your bank",
+        "description": "**[Open this link to authorise at your bank]({auth_url})**\n\nAfter logging in you will be redirected to enablebanking.com. Copy the `code` value from the URL bar (it looks like `?code=abc…`) and paste it below.",
+        "data": {
+          "auth_code": "Authorisation code"
+        }
+      },
+      "reauth_jwt": {
+        "title": "Re-authenticate with Enable Banking",
+        "description": "Your **{aspsp_name}** consent has expired or been revoked. Confirm your JWT below (it is pre-filled if it is still valid) and then authorise a new session at your bank.",
+        "data": {
+          "jwt": "JWT (bearer token)"
+        }
+      },
+      "reauth_auth": {
+        "title": "Authorise at your bank",
+        "description": "**[Open this link to re-authorise at your bank]({auth_url})**\n\nPaste the `code` value from the redirect URL below.",
+        "data": {
+          "auth_code": "Authorisation code"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to Enable Banking — check your internet connection.",
+      "invalid_auth": "The JWT was rejected — check that it is signed with your application's private key and has not expired.",
+      "invalid_session": "The session ID is unknown, revoked, or expired — complete the bank authorisation again.",
+      "invalid_auth_code": "The authorisation code was rejected — make sure you copied the full `code` value from the redirect URL.",
+      "unknown": "Unexpected error — check the Home Assistant log for details."
+    },
+    "abort": {
+      "already_configured": "This bank session is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Enable Banking options",
+        "description": "How often to poll for a new balance. PSD2 caps unattended polling at 4/day per consent, so values below 6 hours (21600 s) are not recommended.",
+        "data": {
+          "scan_interval": "Update interval (seconds)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "balance": {
+        "name": "Balance"
+      }
+    }
+  }
+}

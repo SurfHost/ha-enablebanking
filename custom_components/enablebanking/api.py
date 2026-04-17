@@ -1,15 +1,19 @@
-"""Enable Banking API client for the ASN Bank Balance integration.
+"""Enable Banking API client.
 
-The integration wraps Enable Banking's "aggregator" API, which acts as the
-licensed TPP and front-ends de Volksbank (ASN/SNS/RegioBank) among many
-other ASPSPs. Auth model: a user-signed JWT is used as a bearer token, and
-all per-account calls are scoped by the Enable Banking *session id* that
-the PSU received after completing the redirect authorisation at ASN.
+Wraps the Enable Banking aggregator API which acts as the licensed TPP and
+front-ends ASN Bank, N26, Revolut, Openbank, and many other ASPSPs.
 
-This module intentionally only implements the two read endpoints we need:
+Auth model: a user-signed JWT is used as a bearer token; per-account calls
+are scoped by the Enable Banking session id obtained after the PSU completes
+the bank's redirect-based consent flow.
 
-    GET /sessions/{session_id}         -> account list and status
-    GET /accounts/{account_id}/balances
+Endpoints implemented:
+
+    GET  /aspsps                          -> supported bank list
+    POST /auth                            -> initiate consent, get redirect URL
+    POST /sessions                        -> exchange auth code for session_id
+    GET  /sessions/{session_id}           -> account list and session status
+    GET  /accounts/{account_id}/balances  -> balance objects for one account
 
 See https://enablebanking.com/docs/api/reference/ for the full surface.
 """
@@ -17,11 +21,13 @@ See https://enablebanking.com/docs/api/reference/ for the full surface.
 from __future__ import annotations
 
 import logging
+import secrets
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import aiohttp
 
-from .const import ENABLE_BANKING_API_URL
+from .const import ENABLE_BANKING_API_URL, REDIRECT_URL
 from .errors import (
     EnableBankingAPIError,
     EnableBankingAuthenticationError,
@@ -32,9 +38,6 @@ from .models import AccountBalance
 
 _LOGGER = logging.getLogger(__name__)
 
-# Balance type preference: closing booked gives the "end of day" balance
-# everyone reads as "my balance". Falling back to interim available keeps
-# the sensor alive if a bank only exposes real-time availability.
 _BALANCE_TYPE_PREFERENCE: tuple[str, ...] = (
     "CLBD",  # closing booked
     "ITAV",  # interim available
@@ -45,7 +48,7 @@ _BALANCE_TYPE_PREFERENCE: tuple[str, ...] = (
 
 
 class EnableBankingClient:
-    """Small async client for the Enable Banking AIS endpoints we need."""
+    """Async client for the Enable Banking AIS endpoints."""
 
     def __init__(
         self,
@@ -53,10 +56,16 @@ class EnableBankingClient:
         jwt: str,
         session_id: str,
     ) -> None:
-        """Initialize the client."""
         self._session = session
         self._jwt = jwt
         self._session_id = session_id
+
+    @classmethod
+    def for_config_flow(
+        cls, session: aiohttp.ClientSession, jwt: str
+    ) -> EnableBankingClient:
+        """Create a client for config-flow steps that precede session creation."""
+        return cls(session, jwt, "")
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -65,43 +74,109 @@ class EnableBankingClient:
             "Accept": "application/json",
         }
 
-    async def _request_json(self, path: str) -> Any:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, str] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> Any:
         url = f"{ENABLE_BANKING_API_URL}{path}"
         try:
-            async with self._session.get(
+            async with self._session.request(
+                method,
                 url,
                 headers=self._headers,
-                timeout=aiohttp.ClientTimeout(total=20),
+                params=params,
+                json=json,
+                timeout=aiohttp.ClientTimeout(total=30),
             ) as response:
                 text = await response.text()
-                if response.status == 401:
+                if response.status in (401, 403):
                     raise EnableBankingAuthenticationError(
-                        f"Enable Banking rejected the JWT: {text}"
-                    )
-                if response.status == 403:
-                    raise EnableBankingAuthenticationError(
-                        f"Enable Banking forbade the request: {text}"
+                        f"Enable Banking rejected the JWT (HTTP {response.status})"
                     )
                 if response.status == 404:
-                    # /sessions/{id} returns 404 once the session is revoked,
-                    # expired, or the id is wrong.
                     raise EnableBankingSessionError(
-                        f"Session not found — it may have expired: {text}"
+                        f"Session not found or expired: {text}"
                     )
                 if response.status >= 400:
                     raise EnableBankingAPIError(
-                        f"Enable Banking HTTP {response.status}: {text}"
+                        f"Enable Banking HTTP {response.status}: {text[:200]}"
                     )
                 try:
                     return await response.json(content_type=None)
                 except (aiohttp.ContentTypeError, ValueError) as err:
                     raise EnableBankingAPIError(
-                        f"Invalid JSON from Enable Banking: {text}"
+                        f"Invalid JSON from Enable Banking: {text[:200]}"
                     ) from err
         except (aiohttp.ClientError, TimeoutError) as err:
             raise EnableBankingConnectionError(
                 f"Cannot connect to Enable Banking: {err}"
             ) from err
+
+    # ------------------------------------------------------------------ #
+    # ASPSP discovery                                                      #
+    # ------------------------------------------------------------------ #
+
+    async def async_get_aspsps(
+        self,
+        country: str | None = None,
+        psu_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return the list of ASPSPs available under the current application."""
+        params: dict[str, str] = {}
+        if country:
+            params["country"] = country
+        if psu_type:
+            params["psu_type"] = psu_type
+        result = await self._request("GET", "/aspsps", params=params or None)
+        if isinstance(result, list):
+            return result
+        return result.get("aspsps", [])
+
+    # ------------------------------------------------------------------ #
+    # Auth / session creation                                              #
+    # ------------------------------------------------------------------ #
+
+    async def async_start_auth(
+        self,
+        aspsp_name: str,
+        aspsp_country: str,
+        psu_type: str,
+    ) -> str:
+        """Initiate a consent request and return the bank's OAuth redirect URL."""
+        valid_until = (datetime.now(UTC) + timedelta(days=180)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000000+00:00"
+        )
+        payload: dict[str, Any] = {
+            "access": {"valid_until": valid_until},
+            "aspsp": {"name": aspsp_name, "country": aspsp_country},
+            "psu_type": psu_type,
+            "state": secrets.token_urlsafe(16),
+            "redirect_url": REDIRECT_URL,
+        }
+        result = await self._request("POST", "/auth", json=payload)
+        url: str = result["url"]
+        return url
+
+    async def async_create_session(self, auth_code: str) -> dict[str, Any]:
+        """Exchange a bank auth code for an Enable Banking session.
+
+        Returns the full session object; ``session_id`` (or ``uid``) and
+        ``access.valid_until`` are the fields we store.
+        """
+        payload: dict[str, Any] = {
+            "code": auth_code,
+            "redirect_url": REDIRECT_URL,
+        }
+        result: dict[str, Any] = await self._request("POST", "/sessions", json=payload)
+        return result
+
+    # ------------------------------------------------------------------ #
+    # Session / balance fetching                                           #
+    # ------------------------------------------------------------------ #
 
     async def async_validate(self) -> bool:
         """Check that the JWT and session id are both usable."""
@@ -110,18 +185,16 @@ class EnableBankingClient:
 
     async def async_get_session(self) -> dict[str, Any]:
         """Return the session object (includes the account list)."""
-        data = await self._request_json(f"/sessions/{self._session_id}")
+        data = await self._request("GET", f"/sessions/{self._session_id}")
         if not isinstance(data, dict):
             raise EnableBankingAPIError(
                 f"Unexpected session payload type: {type(data).__name__}"
             )
         return data
 
-    async def async_get_account_balances(
-        self, account_id: str
-    ) -> list[dict[str, Any]]:
+    async def async_get_account_balances(self, account_id: str) -> list[dict[str, Any]]:
         """Return the list of balance objects for a single account."""
-        data = await self._request_json(f"/accounts/{account_id}/balances")
+        data = await self._request("GET", f"/accounts/{account_id}/balances")
         if not isinstance(data, dict):
             raise EnableBankingAPIError(
                 f"Unexpected balances payload type: {type(data).__name__}"
@@ -134,15 +207,11 @@ class EnableBankingClient:
     async def async_get_all_balances(self) -> dict[str, AccountBalance]:
         """Return a snapshot of every account in the session.
 
-        The mapping key is the Enable Banking account_id (uuid) so it is
-        stable across renames. Accounts without a matching preferred
-        balance type are skipped rather than surfaced as ``None``.
+        The mapping key is the Enable Banking account_id (UUID), which is
+        stable across account renames. Accounts without a usable balance
+        type are silently skipped.
         """
         session = await self.async_get_session()
-
-        # Enable Banking's session object contains "accounts" — a list
-        # of account summaries with account_id, account_name, product
-        # and identification (IBAN).
         account_summaries = session.get("accounts", [])
         if not isinstance(account_summaries, list):
             return {}
@@ -178,16 +247,12 @@ class EnableBankingClient:
             except EnableBankingConnectionError:
                 raise
             except EnableBankingAPIError as err:
-                _LOGGER.warning(
-                    "Skipping account %s (%s): %s", name, account_id, err
-                )
+                _LOGGER.warning("Skipping account %s (%s): %s", name, account_id, err)
                 continue
 
             picked = _pick_preferred_balance(balances)
             if picked is None:
-                _LOGGER.debug(
-                    "No usable balance for account %s (%s)", name, account_id
-                )
+                _LOGGER.debug("No usable balance for account %s (%s)", name, account_id)
                 continue
 
             amount_obj = picked.get("balance_amount") or picked.get("amount") or {}
@@ -226,7 +291,6 @@ def _pick_preferred_balance(
     for preferred in _BALANCE_TYPE_PREFERENCE:
         if preferred in by_type:
             return by_type[preferred]
-    # Fall back to whichever the bank returned first.
     for bal in balances:
         if isinstance(bal, dict):
             return bal

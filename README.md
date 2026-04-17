@@ -1,55 +1,53 @@
-# ASN Bank Balance for Home Assistant
+# Enable Banking for Home Assistant
 
 [![Validate](https://github.com/SurfHost/ha-asnbank-balance/actions/workflows/validate.yml/badge.svg)](https://github.com/SurfHost/ha-asnbank-balance/actions/workflows/validate.yml)
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 
-A Home Assistant custom integration that shows the balance of your **ASN Bank** (de Volksbank) checking account on a dashboard. It also works for SNS and RegioBank accounts, since they share the same banking licence.
+A Home Assistant custom integration that shows account balances from any bank supported by **[Enable Banking](https://enablebanking.com/)** — including ASN Bank, N26, Revolut, Openbank, and hundreds more.
 
-The integration does not talk to ASN's PSD2 API directly (that requires an eIDAS QWAC certificate and TPP registration with De Nederlandsche Bank — not realistic for hobbyists). Instead it uses **[Enable Banking](https://enablebanking.com/)** as a licensed TPP aggregator. Enable Banking offers a free tier for personal use, which is plenty for a single dashboard sensor polled four times a day.
+Each bank connection is a separate config entry, so you can add as many as you like and see all balances on one dashboard.
+
+The integration uses **Enable Banking** as the licensed TPP (Third Party Provider). Enable Banking offers a free personal tier that covers a single PSU polling up to four times a day, which is exactly what PSD2 allows for unattended Account Information access.
 
 ## Features
 
-- Balance sensor per ASN/SNS/RegioBank account the Enable Banking session exposes
-- EUR, state class `total`, device class `monetary`
-- Attributes: IBAN, account name, product, currency, balance type, reference date, last updated
-- DataUpdateCoordinator polling every 6h by default (= 4/day, the PSD2 ceiling)
-- Options flow to tune the interval (1-24 h)
-- Reauthentication flow when the Enable Banking session is revoked or expires
+- One config entry per bank — add ASN Bank, N26, Revolut, Openbank independently
+- Balance sensor per discovered account under each entry
+- Revolut Business supported: select ASPSP "Revolut" with account type "Business"
+- EUR (and other currencies) with `state_class: total`, `device_class: monetary`
+- Attributes per sensor: IBAN, account name, product, currency, balance type, reference date, last updated, bank name, `consent_expires_at`, `consent_days_remaining`
+- DataUpdateCoordinator polling every 6 h (4/day, the PSD2 ceiling); configurable via options flow (1–24 h)
+- Graceful 180-day consent expiry: proactive 14-day warning, automatic reauth UI when the consent lapses
+- Reauth flow that re-uses your existing JWT (if still valid) and only requires a new bank authorisation
 
 ## Requirements
 
 - Home Assistant 2026.4 or newer
-- An Enable Banking account (free personal tier is fine)
-- An active Enable Banking session with ASN Bank (valid 180 days under PSD2)
+- An [Enable Banking](https://enablebanking.com/) account (free personal tier)
+- One active Enable Banking session per bank (valid 180 days)
 
 ## One-off setup at Enable Banking
 
-Enable Banking is the licensed TPP; you are a PSU (Payment Service User) authorising access to your own account. You only need to do this once per 180 days.
+You only need to do this once per bank. Each bank connection in HA maps to one Enable Banking session.
 
 1. Sign up at [enablebanking.com](https://enablebanking.com/) and open the **Control Panel**.
-2. Go to **API applications**, click **Register a new application**, give it a name (e.g. *Home Assistant*) and add a redirect URL you control (any valid HTTPS URL works for the manual flow — you can even use `https://enablebanking.com/`).
-3. Download the application's **private key** and note the **application id**. Keep the private key somewhere safe — you'll sign JWTs with it.
-4. Generate a JWT. Enable Banking accepts JWTs signed with your application's private key (RS256) with the following payload:
+2. Go to **API applications → Register a new application**. Give it any name (e.g. *Home Assistant*) and add `https://enablebanking.com/` as a redirect URL.
+3. Download the application's **private key** and note the **application ID**.
+4. Generate a JWT signed with your private key (RS256). Payload:
    ```json
    {
      "iss": "enablebanking.com",
      "aud": "api.enablebanking.com",
      "iat": <now>,
      "exp": <now + 24h>,
-     "kid": "<your application id>"
+     "kid": "<your application ID>"
    }
    ```
-   The Enable Banking docs have a ready-to-use Python snippet; you can run it locally and copy the resulting JWT string.
-5. Start a session with ASN Bank. Two options:
-   - **API:** `POST /auth` with body `{"access": {"valid_until": "..."}, "aspsp": {"name": "ASN Bank", "country": "NL"}, "psu_type": "personal", "state": "anything", "redirect_url": "<your redirect>"}`. Follow the returned `url` in a browser, log in at ASN, and the redirect URL will contain a `code` parameter. Then `POST /sessions` with that code to obtain the `session_id`.
-   - **Quick-start helper:** the Enable Banking docs ship a small Python quick-start script that performs both steps; run it and copy the `session_id` from the output.
-6. You now have a **JWT** and a **session ID**. Both go into the Home Assistant config flow below.
+   The Enable Banking docs include a ready-to-run Python snippet for this.
+
+That JWT is all you need to start adding bank connections in Home Assistant — the integration handles the rest of the OAuth flow interactively.
 
 A full walkthrough lives at [enablebanking.com/docs/api/quick-start/](https://enablebanking.com/docs/api/quick-start/).
-
-### PSD2 consent lifetime
-
-Every PSD2 Account Information consent is valid for **180 days**. After that the session returns 404 / 410 and this integration triggers a reauth — generate a new session (steps 5–6) and paste the fresh `session_id` into the reauthentication dialog.
 
 ## Installation
 
@@ -59,72 +57,141 @@ Every PSD2 Account Information consent is valid for **180 days**. After that the
 
 Or manually in HACS:
 
-1. Open HACS → three-dot menu → **Custom repositories**.
+1. HACS → three-dot menu → **Custom repositories**.
 2. Add `https://github.com/SurfHost/ha-asnbank-balance` with category **Integration**.
-3. Search for **ASN Bank Balance** and install it.
+3. Search for **Enable Banking** and install it.
 4. Restart Home Assistant.
 
 ### Manual
 
-1. Copy `custom_components/asnbank/` into your Home Assistant `config/custom_components/` directory.
+1. Copy `custom_components/enablebanking/` into your HA `config/custom_components/` directory.
 2. Restart Home Assistant.
 
-## Configuration
+## Adding a bank
 
-[![Add Integration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=asnbank)
+[![Add Integration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=enablebanking)
 
-Or manually:
+Or: **Settings → Devices & Services → Add Integration → Enable Banking**.
 
-1. **Settings → Devices & Services → Add Integration → ASN Bank Balance.**
-2. Paste the **JWT** and **session ID** from the Enable Banking setup above.
-3. The integration verifies the credentials by fetching the session and creates one balance sensor per account.
+The config flow has three steps:
 
-### Options
+1. **JWT** — paste your Enable Banking application JWT.
+2. **Bank** — pick a bank from the dropdown (populated live from Enable Banking's ASPSP list) and select *Personal* or *Business*.
+3. **Authorise** — the flow shows a link to your bank's login page. Click it, log in, and you'll be redirected to `enablebanking.com?code=…`. Copy the `code` value from the URL bar and paste it back in HA. The integration exchanges it for a session and creates the balance sensors.
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| Update interval (seconds) | 21600 (6 h) | How often to poll. Minimum 3600, maximum 86400. Values below 6 h may breach the PSD2 4-polls-per-day limit and cause ASN to throttle you. |
+Repeat from the top to add more banks.
+
+### Revolut Business
+
+Select ASPSP **Revolut** and account type **Business**. Enable Banking uses a single "Revolut" ASPSP entry with a `psu_type` field distinguishing personal and business — not two separate entries.
 
 ## Sensors
 
 ### Balance (per account)
-- **State**: EUR balance (closing booked preferred, with fallback to interim available)
-- **Name**: `Balance <IBAN>` so multi-account setups don't collide
-- **Attributes**: `iban`, `account_name`, `product`, `currency`, `balance_type`, `reference_date`, `last_updated`
+
+| Property | Value |
+|----------|-------|
+| State | EUR balance (closing booked preferred, falls back to interim available) |
+| Unit | Account currency |
+| State class | `total` |
+| Device class | `monetary` |
+
+**Attributes**
+
+| Key | Description |
+|-----|-------------|
+| `iban` | Account IBAN |
+| `account_name` | Account name or product |
+| `product` | Product type from the bank |
+| `currency` | ISO currency code |
+| `balance_type` | Balance type code (CLBD, ITAV, …) |
+| `reference_date` | Date of the reported balance |
+| `last_updated` | Timestamp of last successful coordinator poll |
+| `aspsp` | Bank name (useful for templates across multiple entries) |
+| `consent_expires_at` | ISO timestamp when the PSD2 consent expires |
+| `consent_days_remaining` | Integer days until expiry |
+
+## Options
+
+| Option | Default | Range | Description |
+|--------|---------|-------|-------------|
+| Update interval (seconds) | 21600 (6 h) | 3600–86400 | Poll frequency. Values below 21600 may breach PSD2's 4-polls/day limit. |
 
 ## Lovelace example
 
-A minimal "big tile" view:
+A multi-bank view using one tile per account, grouped by bank:
 
 ```yaml
 type: vertical-stack
 cards:
+  - type: heading
+    heading: ASN Bank
   - type: tile
     entity: sensor.asn_bank_balance_nl00asnb0123456789
-    name: ASN Betaalrekening
+    name: Betaalrekening
     icon: mdi:bank
-    color: blue
-    features_position: bottom
-  - type: markdown
-    content: >-
-      **IBAN:** {{ state_attr('sensor.asn_bank_balance_nl00asnb0123456789', 'iban') }}
-
-      **Updated:** {{ state_attr('sensor.asn_bank_balance_nl00asnb0123456789', 'last_updated') }}
+    color: green
+  - type: heading
+    heading: N26
+  - type: tile
+    entity: sensor.n26_balance_de00n260987654321
+    name: Current Account
+    icon: mdi:credit-card
+  - type: heading
+    heading: Revolut (business)
+  - type: tile
+    entity: sensor.revolut_balance_lt000000000000000000
+    name: Business Account
+    icon: mdi:briefcase
+  - type: heading
+    heading: Openbank
+  - type: tile
+    entity: sensor.openbank_balance_es00open0000000000
+    name: Cuenta Corriente
+    icon: mdi:bank-outline
 ```
 
-Replace the entity id with the one Home Assistant created for your account.
+Replace entity IDs with the ones Home Assistant created for your accounts. A template card showing days until consent expiry:
+
+```yaml
+type: markdown
+content: >-
+  {% set s = states.sensor | selectattr('attributes.consent_expires_at', 'defined') | list %}
+  {% for e in s %}
+  **{{ e.attributes.aspsp }}**: {{ e.attributes.consent_days_remaining }} days remaining
+  {% endfor %}
+```
+
+## 180-day consent cycle
+
+PSD2 limits unattended Account Information consent to **180 days**, after which the user must re-authorise (Strong Customer Authentication) regardless of how frequently they have polled.
+
+### What happens when consent expires
+
+- **14 days before expiry**: a `persistent_notification` appears in HA with the bank name and days remaining, prompting you to renew in advance.
+- **On expiry** (or if the bank revokes consent early): the next poll receives a session-not-found response. The integration marks the entry as needing attention and HA shows the standard *"Integration needs attention"* card under Notifications.
+- **Sensors** go to `unavailable` while reauth is pending.
+
+### Renewing consent
+
+Click the **Reconfigure** button on the integration card (or the notification link), or go to **Settings → Devices & Services → Enable Banking → your bank → Reconfigure**. The reauth flow pre-fills your JWT and asks you to complete a fresh bank authorisation (steps 2–3 of the setup flow above).
+
+You do not need to regenerate your application private key or JWT unless they have also expired.
 
 ## Rate limits
 
-- **PSD2 (the regulation)**: max 4 unattended Account Information polls per day per consent. Stay at 6 h or higher. The integration's default is exactly 4/day.
-- **Enable Banking free tier**: generous for a single PSU. There is no per-request charge on the personal tier.
-- **ASN Bank**: no published limit beyond the PSD2 one.
+- **PSD2 (the regulation)**: max 4 unattended AIS polls per day per consent. Keep the interval at 6 h (21600 s) or higher.
+- **Enable Banking free tier**: no per-request charge for personal use.
+- **Individual banks**: no published limits beyond the PSD2 ceiling.
 
 ## Troubleshooting
 
-- **"Invalid auth"** at setup — your JWT is likely expired (default 24 h), or signed with the wrong key.
-- **"Invalid session"** — the PSD2 consent has been revoked or hit 180 days; generate a new session at Enable Banking.
-- **Balance sensor shows `unavailable`** — the Enable Banking call succeeded but the account had no balance matching the preferred types. Check the Home Assistant debug log with `logger: homeassistant.components.asnbank: debug`.
+| Symptom | Likely cause |
+|---------|-------------|
+| "JWT was rejected" at step 1 | JWT expired (default TTL is 24 h) or signed with wrong key |
+| "Auth code rejected" at step 3 | Copied the wrong query parameter — use only the `code=` value |
+| Sensor shows `unavailable` | Consent expired or bank revoked access — use Reconfigure |
+| Balance stuck / not updating | Check HA log at `logger: homeassistant.components.enablebanking: debug` |
 
 ## License
 

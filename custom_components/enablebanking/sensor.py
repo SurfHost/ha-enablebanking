@@ -1,4 +1,4 @@
-"""Sensor platform for the ASN Bank Balance integration."""
+"""Sensor platform for the Enable Banking integration."""
 
 from __future__ import annotations
 
@@ -16,21 +16,23 @@ from homeassistant.const import CURRENCY_EURO
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
+from homeassistant.util.dt import utcnow
 
-from .coordinator import AsnBankConfigEntry, AsnBankCoordinator
-from .entity import AsnBankEntity
-from .models import AccountBalance, AsnBankData
+from .const import CONF_ASPSP_NAME
+from .coordinator import EnableBankingConfigEntry
+from .entity import EnableBankingEntity
+from .models import AccountBalance, EnableBankingData
 
 
 @dataclass(frozen=True, kw_only=True)
-class AsnBankSensorDescription(SensorEntityDescription):
-    """Describes an ASN Bank Balance sensor entity."""
+class EnableBankingSensorDescription(SensorEntityDescription):
+    """Describes an Enable Banking sensor entity."""
 
     value_fn: Callable[[AccountBalance], StateType] = lambda _: None
-    extra_attrs_fn: Callable[[AccountBalance], dict[str, Any]] | None = None
+    account_attrs_fn: Callable[[AccountBalance], dict[str, Any]] | None = None
 
 
-BALANCE_SENSOR = AsnBankSensorDescription(
+BALANCE_SENSOR = EnableBankingSensorDescription(
     key="balance",
     translation_key="balance",
     native_unit_of_measurement=CURRENCY_EURO,
@@ -39,7 +41,7 @@ BALANCE_SENSOR = AsnBankSensorDescription(
     suggested_display_precision=2,
     icon="mdi:bank",
     value_fn=lambda acc: round(acc.balance, 2),
-    extra_attrs_fn=lambda acc: {
+    account_attrs_fn=lambda acc: {
         "iban": acc.iban,
         "account_name": acc.name,
         "product": acc.product,
@@ -52,15 +54,13 @@ BALANCE_SENSOR = AsnBankSensorDescription(
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: AsnBankConfigEntry,
+    entry: EnableBankingConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up ASN Bank balance sensors.
+    """Set up Enable Banking balance sensors.
 
-    One balance entity is created per account the Enable Banking session
-    exposes. If the session grows to include more accounts later (e.g. a
-    second ASN account at the same bank), new entities will be added on the
-    next reload.
+    One balance entity is created per account the session exposes. New
+    accounts discovered on a later poll are added without a reload.
     """
     coordinator = entry.runtime_data
     known: set[str] = set()
@@ -69,53 +69,46 @@ async def async_setup_entry(
     def _async_add_for_new_accounts() -> None:
         if coordinator.data is None:
             return
-        new_entities: list[AsnBankBalanceSensor] = []
+        new_entities: list[EnableBankingBalanceSensor] = []
         for account_id in coordinator.data.accounts:
             if account_id in known:
                 continue
             known.add(account_id)
             new_entities.append(
-                AsnBankBalanceSensor(coordinator, BALANCE_SENSOR, account_id)
+                EnableBankingBalanceSensor(coordinator, BALANCE_SENSOR, account_id)
             )
         if new_entities:
             async_add_entities(new_entities)
 
     _async_add_for_new_accounts()
-    entry.async_on_unload(
-        coordinator.async_add_listener(_async_add_for_new_accounts)
-    )
+    entry.async_on_unload(coordinator.async_add_listener(_async_add_for_new_accounts))
 
 
-class AsnBankBalanceSensor(AsnBankEntity, SensorEntity):
-    """ASN Bank balance sensor entity."""
+class EnableBankingBalanceSensor(EnableBankingEntity, SensorEntity):
+    """Balance sensor for one Enable Banking account."""
 
-    entity_description: AsnBankSensorDescription
+    entity_description: EnableBankingSensorDescription
 
     @property
     def name(self) -> str | None:
-        """Return a display name including the IBAN so multiple accounts can be told apart."""
         account = self._current_account
-        if account is None:
-            return "Balance"
-        if account.iban:
+        if account is not None and account.iban:
             return f"Balance {account.iban}"
         return "Balance"
 
     @property
     def _current_account(self) -> AccountBalance | None:
-        data: AsnBankData | None = self.coordinator.data
+        data: EnableBankingData | None = self.coordinator.data
         if data is None:
             return None
         return data.accounts.get(self._account_id)
 
     @property
     def available(self) -> bool:
-        """Return True only when the coordinator has data for this account."""
         return super().available and self._current_account is not None
 
     @property
     def native_value(self) -> StateType:
-        """Return the account balance."""
         account = self._current_account
         if account is None:
             return None
@@ -123,10 +116,19 @@ class AsnBankBalanceSensor(AsnBankEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        """Return extra attributes (IBAN, account name, etc.)."""
         account = self._current_account
-        if account is None or self.entity_description.extra_attrs_fn is None:
+        if account is None or self.entity_description.account_attrs_fn is None:
             return None
-        attrs = self.entity_description.extra_attrs_fn(account)
+
+        attrs = self.entity_description.account_attrs_fn(account)
         attrs["last_updated"] = self.coordinator.last_update_success_time
+        attrs["aspsp"] = self.coordinator.config_entry.data.get(CONF_ASPSP_NAME)
+
+        data = self.coordinator.data
+        if data is not None and data.consent_expires_at is not None:
+            attrs["consent_expires_at"] = data.consent_expires_at.isoformat()
+            attrs["consent_days_remaining"] = max(
+                0, (data.consent_expires_at - utcnow()).days
+            )
+
         return attrs

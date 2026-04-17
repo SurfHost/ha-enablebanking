@@ -1,8 +1,9 @@
-"""Data models for the ASN Bank Balance integration."""
+"""Data models for the Enable Banking integration."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,7 +21,8 @@ class AccountBalance:
 
 
 @dataclass(slots=True)
-class AsnBankData:
-    """Container for all ASN Bank data from the coordinator."""
+class EnableBankingData:
+    """Container for all Enable Banking data from one coordinator poll."""
 
     accounts: dict[str, AccountBalance] = field(default_factory=dict)
+    consent_expires_at: datetime | None = None
