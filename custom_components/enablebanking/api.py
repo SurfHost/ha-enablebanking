@@ -212,16 +212,62 @@ class EnableBankingClient:
         type are silently skipped.
         """
         session = await self.async_get_session()
-        account_summaries = session.get("accounts", [])
-        if not isinstance(account_summaries, list):
+        _LOGGER.debug(
+            "Session keys=%s status=%s",
+            sorted(session.keys()),
+            session.get("status"),
+        )
+
+        account_summaries = session.get("accounts")
+        if account_summaries is None:
+            _LOGGER.warning(
+                "Session response has no 'accounts' key; top-level keys were %s",
+                sorted(session.keys()),
+            )
             return {}
+        if not isinstance(account_summaries, list):
+            _LOGGER.warning(
+                "Session 'accounts' is %s, expected list — full value: %r",
+                type(account_summaries).__name__,
+                account_summaries,
+            )
+            return {}
+        _LOGGER.debug("Session lists %d account(s)", len(account_summaries))
 
         out: dict[str, AccountBalance] = {}
-        for summary in account_summaries:
+        for idx, summary in enumerate(account_summaries):
             if not isinstance(summary, dict):
+                _LOGGER.debug(
+                    "account[%d] is %s (%r) — skipping",
+                    idx,
+                    type(summary).__name__,
+                    summary,
+                )
                 continue
+            _LOGGER.debug(
+                "account[%d] keys=%s uid=%r",
+                idx,
+                sorted(summary.keys()),
+                summary.get("uid"),
+            )
+
             account_id = summary.get("uid") or summary.get("account_id")
+            if isinstance(account_id, dict):
+                # Some ASPSPs only return {"iban": "..."} here and no uid.
+                # Without a uid we cannot call /accounts/{id}/balances.
+                _LOGGER.warning(
+                    "account[%d] has no 'uid'; got account_id=%r — cannot fetch "
+                    "balances without a stable ID",
+                    idx,
+                    account_id,
+                )
+                continue
             if not account_id:
+                _LOGGER.warning(
+                    "account[%d] has no usable identifier; keys=%s",
+                    idx,
+                    sorted(summary.keys()),
+                )
                 continue
 
             iban = (
@@ -250,15 +296,32 @@ class EnableBankingClient:
                 _LOGGER.warning("Skipping account %s (%s): %s", name, account_id, err)
                 continue
 
+            _LOGGER.debug(
+                "account %s returned %d balance objects, types=%s",
+                account_id,
+                len(balances),
+                [b.get("balance_type") for b in balances if isinstance(b, dict)],
+            )
+
             picked = _pick_preferred_balance(balances)
             if picked is None:
-                _LOGGER.debug("No usable balance for account %s (%s)", name, account_id)
+                _LOGGER.warning(
+                    "No usable balance for account %s (%s); raw balances=%r",
+                    name,
+                    account_id,
+                    balances,
+                )
                 continue
 
             amount_obj = picked.get("balance_amount") or picked.get("amount") or {}
             try:
                 amount = float(amount_obj.get("amount"))
             except (TypeError, ValueError):
+                _LOGGER.warning(
+                    "Could not parse amount for account %s; picked=%r",
+                    account_id,
+                    picked,
+                )
                 continue
 
             out[account_id] = AccountBalance(
@@ -272,6 +335,7 @@ class EnableBankingClient:
                 reference_date=picked.get("reference_date"),
             )
 
+        _LOGGER.debug("async_get_all_balances produced %d account balance(s)", len(out))
         return out
 
 
