@@ -33,19 +33,14 @@ You only need to do this once per bank. Each bank connection in HA maps to one E
 1. Sign up at [enablebanking.com](https://enablebanking.com/) and open the **Control Panel**.
 2. Go to **API applications → Register a new application**. Give it any name (e.g. *Home Assistant*) and add `https://enablebanking.com/` as a redirect URL.
 3. Download the application's **private key** and note the **application ID**.
-4. Generate a JWT signed with your private key (RS256). Payload:
-   ```json
-   {
-     "iss": "enablebanking.com",
-     "aud": "api.enablebanking.com",
-     "iat": <now>,
-     "exp": <now + 24h>,
-     "kid": "<your application ID>"
-   }
+4. Generate a JWT signed with your private key (RS256). Header carries `kid` (your application ID); payload carries `iss`, `aud`, `iat`, `exp`. The repo ships a helper:
+   ```bash
+   pip install "pyjwt[crypto]"
+   python scripts/generate_jwt.py --key path/to/key.pem --app-id <UUID> --copy
    ```
-   The Enable Banking docs include a ready-to-run Python snippet for this.
+   `--copy` puts the JWT on the Windows clipboard. Default lifetime is 24 h; adjust with `--ttl HOURS`.
 
-That JWT is all you need to start adding bank connections in Home Assistant — the integration handles the rest of the OAuth flow interactively.
+That JWT is all you need to start adding bank connections in Home Assistant — the integration handles the rest of the OAuth flow interactively. Re-run the helper whenever the JWT expires.
 
 A full walkthrough lives at [enablebanking.com/docs/api/quick-start/](https://enablebanking.com/docs/api/quick-start/).
 
