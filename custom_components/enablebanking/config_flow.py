@@ -61,31 +61,73 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Collect the Enable Banking application JWT and validate it."""
+        """Collect the Enable Banking application JWT and validate it.
+
+        If a previously-added entry still has a valid JWT we silently reuse
+        it and skip to the country step — adding the 2nd/3rd/4th bank is a
+        one-click affair rather than a re-paste of the same token.
+        """
         errors: dict[str, str] = {}
 
-        if user_input is not None:
+        if user_input is None:
+            # Try to reuse a JWT from an existing entry for this domain.
+            reuse_jwt = self._jwt_from_existing_entries()
+            if reuse_jwt and await self._try_load_aspsps(reuse_jwt):
+                _LOGGER.debug("Reusing JWT from an existing entry; skipping JWT step")
+                self._jwt = reuse_jwt
+                return await self.async_step_country()
+        else:
             jwt = user_input[CONF_JWT].strip()
-            http = async_get_clientsession(self.hass)
-            client = EnableBankingClient.for_config_flow(http, jwt)
-            try:
-                self._aspsps = await client.async_get_aspsps()
-            except EnableBankingAuthenticationError:
-                errors["base"] = "invalid_auth"
-            except EnableBankingConnectionError:
-                errors["base"] = "cannot_connect"
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception("Unexpected error validating JWT")
-                errors["base"] = "unknown"
-            else:
+            if await self._try_load_aspsps(jwt, errors=errors):
                 self._jwt = jwt
                 return await self.async_step_country()
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({vol.Required(CONF_JWT): str}),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_JWT,
+                        default=self._jwt_from_existing_entries() or vol.UNDEFINED,
+                    ): str,
+                }
+            ),
             errors=errors,
         )
+
+    async def _try_load_aspsps(
+        self, jwt: str, errors: dict[str, str] | None = None
+    ) -> bool:
+        """Fetch the ASPSP list with ``jwt``; cache on success.
+
+        If ``errors`` is provided, populates it on failure for form display.
+        """
+        http = async_get_clientsession(self.hass)
+        client = EnableBankingClient.for_config_flow(http, jwt)
+        try:
+            self._aspsps = await client.async_get_aspsps()
+        except EnableBankingAuthenticationError:
+            if errors is not None:
+                errors["base"] = "invalid_auth"
+            return False
+        except EnableBankingConnectionError:
+            if errors is not None:
+                errors["base"] = "cannot_connect"
+            return False
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Unexpected error validating JWT")
+            if errors is not None:
+                errors["base"] = "unknown"
+            return False
+        return True
+
+    def _jwt_from_existing_entries(self) -> str | None:
+        """Return a JWT from any existing config entry, most recent first."""
+        for entry in reversed(list(self._async_current_entries())):
+            jwt = entry.data.get(CONF_JWT)
+            if isinstance(jwt, str) and jwt:
+                return jwt
+        return None
 
     # ------------------------------------------------------------------ #
     # Step 2a: country                                                     #
