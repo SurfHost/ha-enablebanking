@@ -35,10 +35,15 @@ class EnableBankingEntity(CoordinatorEntity[EnableBankingCoordinator]):
         psu_type = entry.data.get(CONF_PSU_TYPE, "")
         model_parts = [p for p in (country, psu_type) if p]
 
+        # Put the bank in `manufacturer` so the service-info card reads
+        # "<country · psu_type> / door <Bank>" — that's the info users
+        # actually care about on a balance card. The "data via Enable
+        # Banking" provenance stays visible through the attribution on
+        # each entity and the integration card title.
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=aspsp_name,
-            manufacturer="Enable Banking",
+            manufacturer=aspsp_name,
             model=" · ".join(model_parts) if model_parts else "Account",
             entry_type=DeviceEntryType.SERVICE,
         )

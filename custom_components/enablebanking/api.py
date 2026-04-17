@@ -245,14 +245,8 @@ class EnableBankingClient:
                 sorted(meta.keys()) if meta else "<missing>",
             )
             iban = _account_iban(meta)
-            name = (
-                meta.get("name")
-                or meta.get("account_name")
-                or meta.get("product")
-                or iban
-                or uid[:8]
-            )
-            product = meta.get("product")
+            name = _account_display_name(meta) or iban or uid[:8]
+            product = meta.get("product") if isinstance(meta.get("product"), str) else None
 
             try:
                 balances = await self.async_get_account_balances(uid)
@@ -297,7 +291,7 @@ class EnableBankingClient:
                 account_id=uid,
                 iban=iban,
                 name=str(name),
-                product=product if isinstance(product, str) else None,
+                product=product,
                 currency=str(amount_obj.get("currency", "EUR")),
                 balance=amount,
                 balance_type=picked.get("balance_type"),
@@ -355,15 +349,55 @@ def _collect_accounts(
 
 
 def _account_iban(meta: dict[str, Any]) -> str:
-    """Extract an IBAN from the account-metadata dict, tolerating nesting."""
-    account_id = meta.get("account_id")
-    if isinstance(account_id, dict):
-        iban = account_id.get("iban")
-        if isinstance(iban, str) and iban:
-            return iban
-    iban = meta.get("iban")
-    if isinstance(iban, str) and iban:
-        return iban
+    """Extract an IBAN from the account-metadata dict.
+
+    ASPSPs vary: some put it top-level as ``iban``, some nest under
+    ``account_id.iban`` (Berlin Group style), others use ``identification``,
+    ``details``, or ``account``. Walk the likely paths and return the first
+    string hit.
+    """
+    for key in ("iban", "IBAN"):
+        val = meta.get(key)
+        if isinstance(val, str) and val:
+            return val
+    for container_key in (
+        "account_id",
+        "identification",
+        "identifications",
+        "details",
+        "account",
+    ):
+        container = meta.get(container_key)
+        if isinstance(container, dict):
+            for key in ("iban", "IBAN"):
+                val = container.get(key)
+                if isinstance(val, str) and val:
+                    return val
+        elif isinstance(container, list):
+            for item in container:
+                if isinstance(item, dict):
+                    for key in ("iban", "IBAN"):
+                        val = item.get(key)
+                        if isinstance(val, str) and val:
+                            return val
+    return ""
+
+
+def _account_display_name(meta: dict[str, Any]) -> str:
+    """Best human-readable name for an account, across ASPSP variations."""
+    for key in (
+        "name",
+        "displayName",
+        "display_name",
+        "account_name",
+        "ownerName",
+        "owner_name",
+        "product",
+        "cash_account_type",
+    ):
+        val = meta.get(key)
+        if isinstance(val, str) and val:
+            return val
     return ""
 
 
