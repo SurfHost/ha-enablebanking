@@ -32,6 +32,7 @@ from .errors import (
     EnableBankingAPIError,
     EnableBankingAuthenticationError,
     EnableBankingConnectionError,
+    EnableBankingRateLimitError,
     EnableBankingSessionError,
 )
 from .models import AccountBalance
@@ -100,6 +101,10 @@ class EnableBankingClient:
                 if response.status == 404:
                     raise EnableBankingSessionError(
                         f"Session not found or expired: {text}"
+                    )
+                if response.status == 429:
+                    raise EnableBankingRateLimitError(
+                        f"PSD2 rate limit exceeded at ASPSP: {text[:200]}"
                     )
                 if response.status >= 400:
                     raise EnableBankingAPIError(
@@ -204,12 +209,19 @@ class EnableBankingClient:
             return []
         return balances
 
-    async def async_get_all_balances(self) -> dict[str, AccountBalance]:
+    async def async_get_all_balances(
+        self,
+        fallback: dict[str, AccountBalance] | None = None,
+    ) -> dict[str, AccountBalance]:
         """Return a snapshot of every account in the session.
 
         The mapping key is the Enable Banking account UID (UUID), stable
         across account renames. Accounts without a usable balance type are
         silently skipped.
+
+        ``fallback`` is the coordinator's previous data; if an account's
+        balances hit the PSD2 rate limit (HTTP 429) we keep its previous
+        ``AccountBalance`` rather than dropping the sensor to unavailable.
 
         Session payload shape (observed for N26 and similar ASPSPs):
             {
@@ -256,6 +268,24 @@ class EnableBankingClient:
                 raise
             except EnableBankingConnectionError:
                 raise
+            except EnableBankingRateLimitError as err:
+                if fallback and uid in fallback:
+                    _LOGGER.warning(
+                        "Rate limited on %s — keeping previous balance "
+                        "(PSD2 caps AIS polling at 4/day). Error: %s",
+                        name,
+                        err,
+                    )
+                    out[uid] = fallback[uid]
+                else:
+                    _LOGGER.warning(
+                        "Rate limited on %s and no previous balance to fall "
+                        "back on; sensor will be unavailable until the quota "
+                        "resets. Error: %s",
+                        name,
+                        err,
+                    )
+                continue
             except EnableBankingAPIError as err:
                 _LOGGER.warning("Skipping account %s (%s): %s", name, uid, err)
                 continue

@@ -24,6 +24,7 @@ from .errors import (
     EnableBankingAPIError,
     EnableBankingAuthenticationError,
     EnableBankingConnectionError,
+    EnableBankingRateLimitError,
     EnableBankingSessionError,
 )
 from .models import EnableBankingData
@@ -55,15 +56,31 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
         self.last_refresh: datetime | None = None
 
     async def _async_update_data(self) -> EnableBankingData:
-        """Fetch all account balances through Enable Banking."""
+        """Fetch all account balances through Enable Banking.
+
+        Passes the previous poll's balances into ``async_get_all_balances``
+        as a fallback so per-account 429s keep the sensor populated rather
+        than flipping to unavailable. A whole-session 429 preserves the
+        whole previous snapshot.
+        """
+        prev_accounts = self.data.accounts if self.data is not None else {}
         try:
-            accounts = await self.client.async_get_all_balances()
+            accounts = await self.client.async_get_all_balances(fallback=prev_accounts)
         except EnableBankingAuthenticationError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except EnableBankingSessionError as err:
             # Consent has expired or been revoked — surface the reauth UI.
             self.config_entry.async_start_reauth(self.hass)
             raise ConfigEntryAuthFailed(str(err)) from err
+        except EnableBankingRateLimitError as err:
+            if prev_accounts:
+                _LOGGER.warning(
+                    "Session-level PSD2 rate limit; keeping previous snapshot. %s",
+                    err,
+                )
+                accounts = prev_accounts
+            else:
+                raise UpdateFailed(str(err)) from err
         except (EnableBankingConnectionError, EnableBankingAPIError) as err:
             raise UpdateFailed(str(err)) from err
 

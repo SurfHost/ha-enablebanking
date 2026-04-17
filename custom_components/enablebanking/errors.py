@@ -23,3 +23,7 @@ class EnableBankingSessionError(EnableBankingError):
 
 class EnableBankingAPIError(EnableBankingError):
     """Raised when Enable Banking returns an unexpected error."""
+
+
+class EnableBankingRateLimitError(EnableBankingAPIError):
+    """Raised when the ASPSP returns HTTP 429 (PSD2 4-polls-per-day cap)."""
