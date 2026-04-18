@@ -12,3 +12,8 @@ venv/
 .ruff_cache/
 .pytest_cache/
 .claude/
+
+# Private keys — never commit.
+*.pem
+*.key
+*.p12

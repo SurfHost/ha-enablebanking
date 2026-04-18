@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -18,10 +19,10 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.util.dt import utcnow
 
-from .const import CONF_ASPSP_NAME
-from .coordinator import EnableBankingConfigEntry
+from .const import CONF_ASPSP_NAME, DEFAULT_SCAN_INTERVAL
+from .coordinator import EnableBankingConfigEntry, EnableBankingCoordinator
 from .entity import EnableBankingEntity
-from .models import AccountBalance, EnableBankingData
+from .models import AccountBalance
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -59,18 +60,28 @@ async def async_setup_entry(
 ) -> None:
     """Set up Enable Banking balance sensors.
 
-    One balance entity is created per account the session exposes. New
-    accounts discovered on a later poll are added without a reload.
+    Accounts discovered on a later poll are added without a reload. Accounts
+    present only in the on-disk cache are picked up at boot via
+    ``coordinator._cached`` (which has already seeded ``coordinator.data`` in
+    ``async_load_cache`` by the time we reach here).
     """
     coordinator = entry.runtime_data
     known: set[str] = set()
 
     @callback
     def _async_add_for_new_accounts() -> None:
-        if coordinator.data is None:
-            return
         new_entities: list[EnableBankingBalanceSensor] = []
-        for account_id in coordinator.data.accounts:
+        seen_uids: set[str] = set()
+        if coordinator.data is not None:
+            seen_uids.update(coordinator.data.accounts.keys())
+        # Also surface sensors for accounts that exist only in the cache
+        # (e.g. first boot after an HA restart, before the first post-boot
+        # poll has run).
+        seen_uids.update(
+            uid for uid in coordinator._cached
+        )  # noqa: SLF001 — intentional direct access
+
+        for account_id in seen_uids:
             if account_id in known:
                 continue
             known.add(account_id)
@@ -85,9 +96,16 @@ async def async_setup_entry(
 
 
 class EnableBankingBalanceSensor(EnableBankingEntity, SensorEntity):
-    """Balance sensor for one Enable Banking account."""
+    """Balance sensor for one Enable Banking account.
+
+    Always returns the last known balance — fresh from the coordinator if
+    the latest poll had it, otherwise from the persistent cache. The sensor
+    never goes ``unavailable`` or returns ``unknown`` as long as at least
+    one successful poll has ever happened for this account.
+    """
 
     entity_description: EnableBankingSensorDescription
+    coordinator: EnableBankingCoordinator
 
     @property
     def name(self) -> str | None:
@@ -102,14 +120,20 @@ class EnableBankingBalanceSensor(EnableBankingEntity, SensorEntity):
 
     @property
     def _current_account(self) -> AccountBalance | None:
-        data: EnableBankingData | None = self.coordinator.data
-        if data is None:
-            return None
-        return data.accounts.get(self._account_id)
+        """Best-effort account lookup: fresh data, else cache."""
+        data = self.coordinator.data
+        if data is not None and self._account_id in data.accounts:
+            return data.accounts[self._account_id]
+        return self.coordinator.cached_account(self._account_id)
 
     @property
     def available(self) -> bool:
-        return super().available and self._current_account is not None
+        # Intentionally does NOT chain to super().available. The base
+        # CoordinatorEntity ties availability to the last poll's success,
+        # which would flip the sensor to unavailable on a transient network
+        # blip or a rate-limit response. We want exactly the opposite:
+        # show the last known value with a `stale` attribute if need be.
+        return self._current_account is not None
 
     @property
     def native_value(self) -> StateType:
@@ -125,8 +149,12 @@ class EnableBankingBalanceSensor(EnableBankingEntity, SensorEntity):
             return None
 
         attrs = self.entity_description.account_attrs_fn(account)
-        attrs["last_updated"] = self.coordinator.last_refresh
         attrs["aspsp"] = self.coordinator.config_entry.data.get(CONF_ASPSP_NAME)
+        attrs["last_polled_at"] = (
+            account.last_polled_at.isoformat() if account.last_polled_at else None
+        )
+        attrs["last_error"] = self.coordinator.last_error
+        attrs["stale"] = _is_stale(account, self.coordinator.update_interval)
 
         data = self.coordinator.data
         if data is not None and data.consent_expires_at is not None:
@@ -136,3 +164,13 @@ class EnableBankingBalanceSensor(EnableBankingEntity, SensorEntity):
             )
 
         return attrs
+
+
+def _is_stale(
+    account: AccountBalance, update_interval: timedelta | None
+) -> bool:
+    """True if the last successful poll for this account is older than 2× interval."""
+    if account.last_polled_at is None:
+        return True
+    interval = update_interval or timedelta(seconds=DEFAULT_SCAN_INTERVAL)
+    return (utcnow() - account.last_polled_at) > 2 * interval

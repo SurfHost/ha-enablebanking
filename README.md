@@ -15,8 +15,9 @@ The integration uses **Enable Banking** as the licensed TPP (Third Party Provide
 - Balance sensor per discovered account under each entry
 - Revolut Business supported: select ASPSP "Revolut" with account type "Business"
 - EUR (and other currencies) with `state_class: total`, `device_class: monetary`
-- Attributes per sensor: IBAN, account name, product, currency, balance type, reference date, last updated, bank name, `consent_expires_at`, `consent_days_remaining`
-- DataUpdateCoordinator polling every 6 h (4/day, the PSD2 ceiling); configurable via options flow (1–24 h)
+- Attributes per sensor: IBAN, account name, product, currency, balance type, reference date, bank name, `last_polled_at`, `last_error`, `stale`, `consent_expires_at`, `consent_days_remaining`
+- DataUpdateCoordinator polling every 8 h by default (3/day, one PSD2 slot kept free for restarts); configurable via options flow (6–24 h)
+- **Never-unavailable sensors**: balances are cached to disk and displayed even during rate-limits, network blips, consent expiry, or the first moment after an HA restart before the first poll runs
 - Graceful 180-day consent expiry: proactive 14-day warning, automatic reauth UI when the consent lapses
 - Reauth flow that re-uses your existing JWT (if still valid) and only requires a new bank authorisation
 
@@ -101,8 +102,10 @@ Select ASPSP **Revolut** and account type **Business**. Enable Banking uses a si
 | `currency` | ISO currency code |
 | `balance_type` | Balance type code (CLBD, ITAV, …) |
 | `reference_date` | Date of the reported balance |
-| `last_updated` | Timestamp of last successful coordinator poll |
 | `aspsp` | Bank name (useful for templates across multiple entries) |
+| `last_polled_at` | ISO timestamp of the last successful fetch for this account |
+| `last_error` | Short tag if the most recent poll attempt failed: `rate_limited`, `network`, `consent_expired`, `auth`, `api`. Empty string on success. |
+| `stale` | Boolean — true when `last_polled_at` is older than 2× the update interval |
 | `consent_expires_at` | ISO timestamp when the PSD2 consent expires |
 | `consent_days_remaining` | Integer days until expiry |
 
@@ -110,7 +113,7 @@ Select ASPSP **Revolut** and account type **Business**. Enable Banking uses a si
 
 | Option | Default | Range | Description |
 |--------|---------|-------|-------------|
-| Update interval (seconds) | 21600 (6 h) | 3600–86400 | Poll frequency. Values below 21600 may breach PSD2's 4-polls/day limit. |
+| Update interval (seconds) | 28800 (8 h) | 21600–86400 | Poll frequency. Minimum 6 h — lower values breach PSD2's 4-polls/day cap and get throttled. Default 8 h keeps one slot/day free for HA restarts and reauth. |
 
 ## Lovelace example
 
@@ -157,6 +160,20 @@ content: >-
   {% endfor %}
 ```
 
+## PSD2 polling quota (4 per day)
+
+PSD2 caps unattended Account Information polling at **4 times per day per consent**. Every HA restart, reload, or manual reconfigure burns one of those slots. If you exceed it the bank responds with `HTTP 429 / ASPSP_RATE_LIMIT_EXCEEDED` (`HUB046` on de Volksbank's API) and refuses further polls until the rolling 24 h window elapses.
+
+The integration defaults to **8 hours** (3 polls/day), which leaves one quota slot/day free for restarts and reauth. You can tune this in the options flow between 6 and 24 hours — lower than 6 h is pointless since the bank will throttle you.
+
+### What the integration does about it
+
+- **Balances persist across HA restarts.** The last successful balance per account is written to `.storage/enablebanking.<entry_id>.cache`. On startup the sensor shows the cached value immediately — no API call is made.
+- **Skip the boot-time poll.** If the cached `last_polled_at` is within the interval, the first post-restart poll is scheduled for `last_polled_at + interval` instead of running immediately. No free restart burns a quota slot.
+- **Staggered startup.** When multiple banks are configured, the first post-restart poll per entry is jittered by 0–60 s so four banks don't all burst at the same second.
+- **Per-account back-off.** If a single account returns 429, that account's next scheduled poll is skipped entirely, then normal cadence resumes. Other accounts under the same bank keep polling.
+- **Sensors never go `unavailable`.** On any failure (rate limit, network, consent expiry, API error) the sensor keeps displaying the last known balance. The `last_error` attribute tells you why the latest attempt failed; the `stale` attribute flips to `true` once the cache is older than 2× the update interval.
+
 ## 180-day consent cycle
 
 PSD2 limits unattended Account Information consent to **180 days**, after which the user must re-authorise (Strong Customer Authentication) regardless of how frequently they have polled.
@@ -164,20 +181,14 @@ PSD2 limits unattended Account Information consent to **180 days**, after which 
 ### What happens when consent expires
 
 - **14 days before expiry**: a `persistent_notification` appears in HA with the bank name and days remaining, prompting you to renew in advance.
-- **On expiry** (or if the bank revokes consent early): the next poll receives a session-not-found response. The integration marks the entry as needing attention and HA shows the standard *"Integration needs attention"* card under Notifications.
-- **Sensors** go to `unavailable` while reauth is pending.
+- **On expiry** (or if the bank revokes consent early): the next poll receives a session-not-found response. The integration triggers the reauth flow (the standard *"Integration needs attention"* card appears under Notifications) and sets `last_error: "consent_expired"` on the sensors.
+- **Sensors keep showing the last known balance** with `stale: true`. They do not go unavailable. The reauth card does the nagging.
 
 ### Renewing consent
 
 Click the **Reconfigure** button on the integration card (or the notification link), or go to **Settings → Devices & Services → Enable Banking → your bank → Reconfigure**. The reauth flow pre-fills your JWT and asks you to complete a fresh bank authorisation (steps 2–3 of the setup flow above).
 
 You do not need to regenerate your application private key or JWT unless they have also expired.
-
-## Rate limits
-
-- **PSD2 (the regulation)**: max 4 unattended AIS polls per day per consent. Keep the interval at 6 h (21600 s) or higher.
-- **Enable Banking free tier**: no per-request charge for personal use.
-- **Individual banks**: no published limits beyond the PSD2 ceiling.
 
 ## Troubleshooting
 

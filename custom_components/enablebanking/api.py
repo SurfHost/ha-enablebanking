@@ -212,16 +212,16 @@ class EnableBankingClient:
     async def async_get_all_balances(
         self,
         fallback: dict[str, AccountBalance] | None = None,
-    ) -> dict[str, AccountBalance]:
-        """Return a snapshot of every account in the session.
+        skip_uids: set[str] | None = None,
+    ) -> tuple[dict[str, AccountBalance], set[str]]:
+        """Return (accounts, rate_limited_uids) for the current session.
 
-        The mapping key is the Enable Banking account UID (UUID), stable
-        across account renames. Accounts without a usable balance type are
-        silently skipped.
-
-        ``fallback`` is the coordinator's previous data; if an account's
-        balances hit the PSD2 rate limit (HTTP 429) we keep its previous
-        ``AccountBalance`` rather than dropping the sensor to unavailable.
+        ``fallback`` is the coordinator's previous per-uid data. If an
+        account's balance fetch hits a 429 (or is in ``skip_uids`` for
+        back-off), we return its previous ``AccountBalance`` rather than
+        dropping the sensor. The returned ``rate_limited_uids`` set tells
+        the coordinator which UIDs need a back-off flag set on their
+        cached entry.
 
         Session payload shape (observed for N26 and similar ASPSPs):
             {
@@ -246,9 +246,10 @@ class EnableBankingClient:
             len(metadata),
         )
         if not uids:
-            return {}
+            return {}, set()
 
         out: dict[str, AccountBalance] = {}
+        rate_limited: set[str] = set()
         for uid in uids:
             meta = metadata.get(uid, {})
             _LOGGER.debug(
@@ -256,6 +257,17 @@ class EnableBankingClient:
                 uid[:8],
                 sorted(meta.keys()) if meta else "<missing>",
             )
+
+            # Respect the coordinator's back-off: don't spend a poll on
+            # an account we already know is rate-limited this cycle.
+            if skip_uids and uid in skip_uids:
+                if fallback and uid in fallback:
+                    _LOGGER.debug(
+                        "Skipping %s — rate-limit back-off active", uid[:8]
+                    )
+                    out[uid] = fallback[uid]
+                continue
+
             iban = _account_iban(meta)
             name = _account_display_name(meta) or iban or uid[:8]
             product = meta.get("product") if isinstance(meta.get("product"), str) else None
@@ -269,6 +281,7 @@ class EnableBankingClient:
             except EnableBankingConnectionError:
                 raise
             except EnableBankingRateLimitError as err:
+                rate_limited.add(uid)
                 if fallback and uid in fallback:
                     _LOGGER.warning(
                         "Rate limited on %s — keeping previous balance "
@@ -280,8 +293,7 @@ class EnableBankingClient:
                 else:
                     _LOGGER.warning(
                         "Rate limited on %s and no previous balance to fall "
-                        "back on; sensor will be unavailable until the quota "
-                        "resets. Error: %s",
+                        "back on. Error: %s",
                         name,
                         err,
                     )
@@ -328,8 +340,12 @@ class EnableBankingClient:
                 reference_date=picked.get("reference_date"),
             )
 
-        _LOGGER.debug("async_get_all_balances produced %d account balance(s)", len(out))
-        return out
+        _LOGGER.debug(
+            "async_get_all_balances produced %d account balance(s); %d rate-limited",
+            len(out),
+            len(rate_limited),
+        )
+        return out, rate_limited
 
 
 def _collect_accounts(
