@@ -16,7 +16,7 @@ The integration uses **Enable Banking** as the licensed TPP (Third Party Provide
 - Revolut Business supported: select ASPSP "Revolut" with account type "Business"
 - EUR (and other currencies) with `state_class: total`, `device_class: monetary`
 - Attributes per sensor: IBAN, account name, product, currency, balance type, reference date, bank name, `last_polled_at`, `last_error`, `stale`, `consent_expires_at`, `consent_days_remaining`
-- DataUpdateCoordinator polling every 8 h by default (3/day, one PSD2 slot kept free for restarts); configurable via options flow (6–24 h)
+- Scheduled polling at fixed local times (10:00, 14:00, 18:00, 22:00) with per-entry minute jitter — exactly four polls/day, aligned with PSD2's cap
 - **Never-unavailable sensors**: balances are cached to disk and displayed even during rate-limits, network blips, consent expiry, or the first moment after an HA restart before the first poll runs
 - Graceful 180-day consent expiry: proactive 14-day warning, automatic reauth UI when the consent lapses
 - Reauth flow that re-uses your existing JWT (if still valid) and only requires a new bank authorisation
@@ -109,11 +109,17 @@ Select ASPSP **Revolut** and account type **Business**. Enable Banking uses a si
 | `consent_expires_at` | ISO timestamp when the PSD2 consent expires |
 | `consent_days_remaining` | Integer days until expiry |
 
-## Options
+## Polling schedule
 
-| Option | Default | Range | Description |
-|--------|---------|-------|-------------|
-| Update interval (seconds) | 28800 (8 h) | 21600–86400 | Poll frequency. Minimum 6 h — lower values breach PSD2's 4-polls/day cap and get throttled. Default 8 h keeps one slot/day free for HA restarts and reauth. |
+The integration polls at four fixed local times per day:
+
+```
+10:00   14:00   18:00   22:00
+```
+
+Per-entry minute jitter (deterministic from `entry_id`) staggers banks so they don't hit at `HH:00:00` simultaneously. No interval setting — times are hard-coded, which guarantees you sit exactly at the PSD2 4/day cap regardless of HA restart frequency.
+
+If HA is down when a scheduled time passes, the coordinator runs one catch-up poll on startup (with 0–60 s jitter). If HA is up but the cache is still within the current schedule window, no startup poll runs at all.
 
 ## Lovelace example
 
@@ -164,15 +170,16 @@ content: >-
 
 PSD2 caps unattended Account Information polling at **4 times per day per consent**. Every HA restart, reload, or manual reconfigure burns one of those slots. If you exceed it the bank responds with `HTTP 429 / ASPSP_RATE_LIMIT_EXCEEDED` (`HUB046` on de Volksbank's API) and refuses further polls until the rolling 24 h window elapses.
 
-The integration defaults to **8 hours** (3 polls/day), which leaves one quota slot/day free for restarts and reauth. You can tune this in the options flow between 6 and 24 hours — lower than 6 h is pointless since the bank will throttle you.
+Instead of a configurable interval, the integration polls at four fixed local times — `10:00`, `14:00`, `18:00`, `22:00` — hitting the 4/day cap exactly and predictably. No restart can burn extra quota because the cache supplies startup values.
 
 ### What the integration does about it
 
 - **Balances persist across HA restarts.** The last successful balance per account is written to `.storage/enablebanking.<entry_id>.cache`. On startup the sensor shows the cached value immediately — no API call is made.
-- **Skip the boot-time poll.** If the cached `last_polled_at` is within the interval, the first post-restart poll is scheduled for `last_polled_at + interval` instead of running immediately. No free restart burns a quota slot.
-- **Staggered startup.** When multiple banks are configured, the first post-restart poll per entry is jittered by 0–60 s so four banks don't all burst at the same second.
-- **Per-account back-off.** If a single account returns 429, that account's next scheduled poll is skipped entirely, then normal cadence resumes. Other accounts under the same bank keep polling.
-- **Sensors never go `unavailable`.** On any failure (rate limit, network, consent expiry, API error) the sensor keeps displaying the last known balance. The `last_error` attribute tells you why the latest attempt failed; the `stale` attribute flips to `true` once the cache is older than 2× the update interval.
+- **Skip the boot-time poll.** If the cache still sits within the current schedule window, the first post-restart poll is skipped — the next scheduled slot handles it. Catch-up only runs if HA was down during a scheduled slot.
+- **Staggered startup.** The catch-up (when it does run) is jittered 0–60 s per entry, so four banks don't all burst at the same second.
+- **Per-account back-off.** If a single account returns 429, that account's next scheduled slot is skipped entirely, then normal cadence resumes. Other accounts under the same bank keep polling.
+- **Sensors never go `unavailable`.** On any failure (rate limit, network, consent expiry, API error) the sensor keeps displaying the last known balance. The `last_error` attribute tells you why the latest attempt failed; the `stale` attribute flips to `true` once the cache is older than 24 hours.
+- **Smart reauth.** When only the JWT has expired (session still valid at the bank), the reauth flow updates just the JWT — no bank round-trip needed. Once the first of several banks is reauthenticated, the remaining ones auto-fill the new JWT and are one-click.
 
 ## 180-day consent cycle
 

@@ -56,17 +56,6 @@
       "already_configured": "Deze banksessie is al geconfigureerd"
     }
   },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Enable Banking-opties",
-        "description": "Hoe vaak moet het saldo worden opgehaald? PSD2 beperkt onbeheerd pollen tot 4 keer per dag per toestemming, dus waarden onder 6 uur (21600 s) worden afgeraden.",
-        "data": {
-          "scan_interval": "Update-interval (seconden)"
-        }
-      }
-    }
-  },
   "entity": {
     "sensor": {
       "balance": {

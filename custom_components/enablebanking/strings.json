@@ -56,17 +56,6 @@
       "already_configured": "This bank session is already configured"
     }
   },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Enable Banking options",
-        "description": "How often to poll for a new balance. PSD2 caps unattended polling at 4/day per consent, so values below 6 hours (21600 s) are not recommended.",
-        "data": {
-          "scan_interval": "Update interval (seconds)"
-        }
-      }
-    }
-  },
   "entity": {
     "sensor": {
       "balance": {

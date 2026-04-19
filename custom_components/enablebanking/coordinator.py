@@ -1,25 +1,29 @@
 """DataUpdateCoordinator for the Enable Banking integration.
 
-Design notes (v0.4.0):
+Design notes (v0.5.0):
 
-- Balances are persisted to ``.storage/enablebanking.<entry_id>.cache`` via
-  ``Store``. On startup the coordinator hydrates its state from that cache
-  before platforms are forwarded, so sensors come up immediately showing
-  the last known balance — no API call burned at boot.
+- **Fixed-schedule polling**: polls fire at ``POLL_HOURS`` local time
+  (10:00, 14:00, 18:00, 22:00) with a per-entry minute jitter so multiple
+  banks don't burst at ``HH:00:00``. The minute offset is a deterministic
+  hash of ``entry_id`` so it's stable across HA restarts.
 
-- ``_async_update_data`` NEVER raises. On any failure (rate limit, network,
-  consent expiry, unexpected API error) it sets ``self.last_error`` to a
-  short tag (``rate_limited`` / ``network`` / ``consent_expired`` / ``auth``
-  / ``api``) and returns the cached snapshot so sensors keep displaying
-  their last good value. The reauth card is still triggered directly via
-  ``config_entry.async_start_reauth`` when we detect session or auth
-  failures — we just don't degrade the sensor state to surface it.
+- **``update_interval = None``**: we opt out of ``DataUpdateCoordinator``'s
+  built-in interval scheduler entirely. All polls come from our
+  ``async_track_time_change`` listeners or the one-shot catch-up.
 
-- Per-account 429 back-off: when the API reports a UID was rate limited
-  this cycle, we stamp ``rate_limited_until = now + update_interval`` on
-  that cached entry. The next scheduled poll checks this stamp and tells
-  the API to skip the UID entirely, saving a quota slot. On the subsequent
-  poll the stamp has elapsed and normal cadence resumes.
+- **Catch-up on startup**: if cache's ``last_polled_at`` is older than the
+  most recent scheduled time that has passed, we trigger one refresh
+  (with 0–60 s jitter). Otherwise we just wait for the next slot. This is
+  what keeps HA restarts from burning PSD2 quota.
+
+- **``_async_update_data`` NEVER raises.** On any failure (rate limit,
+  network, consent expiry, auth) it sets ``self.last_error`` and returns
+  the cached snapshot so sensors keep displaying their last good value.
+  Reauth UI is triggered directly via ``config_entry.async_start_reauth``.
+
+- **Per-account 429 back-off**: a rate-limited UID gets
+  ``rate_limited_until = now + 4 hours`` stamped on its cached entry. The
+  next scheduled poll skips it; the one after resumes.
 """
 
 from __future__ import annotations
@@ -31,17 +35,19 @@ from typing import Any
 from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
-from homeassistant.util.dt import utcnow
+from homeassistant.util import dt as dt_util
 
 from .api import EnableBankingClient
 from .const import (
     CONF_ASPSP_NAME,
     CONF_CONSENT_EXPIRES_AT,
     CONSENT_WARNING_DAYS,
-    DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    POLL_HOURS,
+    STALE_THRESHOLD_HOURS,
     STORAGE_VERSION,
 )
 from .errors import (
@@ -57,9 +63,13 @@ _LOGGER = logging.getLogger(__name__)
 
 type EnableBankingConfigEntry = ConfigEntry[EnableBankingCoordinator]
 
+# Back-off one scheduled cycle on a 429. With 4-hour gaps between polls
+# this effectively retries at the next slot.
+_BACK_OFF = timedelta(hours=4)
+
 
 class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
-    """Coordinator to fetch balances via Enable Banking."""
+    """Coordinator to fetch balances via Enable Banking on a fixed schedule."""
 
     config_entry: EnableBankingConfigEntry
 
@@ -68,13 +78,12 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
         hass: HomeAssistant,
         entry: EnableBankingConfigEntry,
         client: EnableBankingClient,
-        scan_interval: int = DEFAULT_SCAN_INTERVAL,
     ) -> None:
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(seconds=scan_interval),
+            update_interval=None,  # scheduled polling — we drive refresh ourselves
         )
         self.client = client
         self.last_refresh: datetime | None = None
@@ -84,6 +93,81 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
         self._store: Store[dict[str, Any]] = Store(
             hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.cache"
         )
+        # Deterministic per-entry minute offset in [0, 59] so multiple
+        # banks don't all poll at xx:00:00. Hash of entry_id stays stable
+        # across HA restarts.
+        self._minute_offset: int = abs(hash(entry.entry_id)) % 60
+
+    @property
+    def minute_offset(self) -> int:
+        return self._minute_offset
+
+    # ------------------------------------------------------------------ #
+    # Scheduling                                                           #
+    # ------------------------------------------------------------------ #
+
+    def register_scheduled_polls(self) -> list:
+        """Register an ``async_track_time_change`` per POLL_HOUR.
+
+        Returns the unsub callbacks — caller should attach them to
+        ``entry.async_on_unload``.
+        """
+        async def _on_scheduled(now: datetime) -> None:
+            _LOGGER.debug(
+                "Scheduled poll fired for entry %s at %s (minute_offset=%d)",
+                self.config_entry.entry_id,
+                now.isoformat(),
+                self._minute_offset,
+            )
+            await self.async_refresh()
+
+        unsubs = []
+        for hour in POLL_HOURS:
+            unsubs.append(
+                async_track_time_change(
+                    self.hass,
+                    _on_scheduled,
+                    hour=hour,
+                    minute=self._minute_offset,
+                    second=0,
+                )
+            )
+        _LOGGER.debug(
+            "Registered %d scheduled polls for entry %s at %s local time, minute %02d",
+            len(unsubs),
+            self.config_entry.entry_id,
+            ", ".join(f"{h:02d}:00" for h in POLL_HOURS),
+            self._minute_offset,
+        )
+        return unsubs
+
+    def most_recent_scheduled_time(self, now: datetime) -> datetime:
+        """The most recent of the POLL_HOURS slots at or before ``now`` (UTC)."""
+        local_now = dt_util.as_local(now)
+        today = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        candidates = [
+            today.replace(hour=h, minute=self._minute_offset)
+            for h in POLL_HOURS
+        ]
+        past = [c for c in candidates if c <= local_now]
+        if past:
+            return dt_util.as_utc(max(past))
+        # Before today's first slot — most recent is yesterday's last slot
+        yesterday_last = (today - timedelta(days=1)).replace(
+            hour=POLL_HOURS[-1], minute=self._minute_offset
+        )
+        return dt_util.as_utc(yesterday_last)
+
+    def needs_catchup(self) -> bool:
+        """True if we should poll now rather than wait for the next slot.
+
+        We catch up if the cache has never been populated, OR the most
+        recent scheduled slot already passed and the cache is older than it.
+        """
+        now = dt_util.utcnow()
+        if self.last_refresh is None:
+            return True
+        return self.last_refresh < self.most_recent_scheduled_time(now)
 
     # ------------------------------------------------------------------ #
     # Cache                                                                #
@@ -130,7 +214,6 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
         )
 
     def cached_account(self, uid: str) -> AccountBalance | None:
-        """Return the cached AccountBalance for ``uid``, or None."""
         return self._cached.get(uid)
 
     # ------------------------------------------------------------------ #
@@ -139,7 +222,7 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
 
     async def _async_update_data(self) -> EnableBankingData:
         """Fetch balances. NEVER raises — always returns cached data on error."""
-        now = utcnow()
+        now = dt_util.utcnow()
         skip_uids = {
             uid
             for uid, ab in self._cached.items()
@@ -184,12 +267,10 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
 
         self.last_error = ""
         self.last_refresh = now
-        back_off_until = now + (self.update_interval or timedelta(hours=8))
+        back_off_until = now + _BACK_OFF
 
         for uid, ab in fresh.items():
             if uid in rate_limited_uids:
-                # The client returned the fallback entry; mark it for one
-                # cycle of back-off and keep its prior last_polled_at.
                 ab.rate_limited_until = back_off_until
             else:
                 ab.last_polled_at = now
@@ -207,7 +288,6 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
         )
 
     def _cached_snapshot(self) -> EnableBankingData:
-        """Produce an EnableBankingData from the current cache."""
         return EnableBankingData(
             accounts=dict(self._cached),
             consent_expires_at=self._parse_consent_expires(),
@@ -223,7 +303,7 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
     def _maybe_warn_expiry(self, consent_expires_at: datetime | None) -> None:
         if consent_expires_at is None or self._warned_expiry:
             return
-        days_remaining = (consent_expires_at - utcnow()).days
+        days_remaining = (consent_expires_at - dt_util.utcnow()).days
         if days_remaining > CONSENT_WARNING_DAYS:
             return
         aspsp_name = self.config_entry.data.get(CONF_ASPSP_NAME, "your bank")

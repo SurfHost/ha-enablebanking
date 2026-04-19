@@ -15,18 +15,25 @@ CONF_PSU_TYPE: Final = "psu_type"
 CONF_AUTH_CODE: Final = "auth_code"
 CONF_CONSENT_EXPIRES_AT: Final = "consent_expires_at"
 
-# PSD2 caps unattended AIS polling at 4/day per consent. 8h = 3 polls/day,
-# leaving one quota slot/day as headroom for reauth flows and manual refreshes
-# after an HA restart. Minimum 6h (4/day ceiling) — anything below gets
-# throttled anyway.
+# Fixed scheduled polling at these local hours — four polls/day, aligned
+# with typical waking life, sitting exactly at the PSD2 4/day cap with
+# regular 4-hour gaps (plus one 12-hour overnight gap).
+POLL_HOURS: Final = (10, 14, 18, 22)
+
+# Legacy / unused constants kept to avoid breaking imports in older
+# user automations referencing scan_interval. Scheduled polling ignores
+# these; they're only used by the staleness threshold calculation.
 DEFAULT_SCAN_INTERVAL: Final = 8 * 60 * 60
-MIN_SCAN_INTERVAL: Final = 6 * 60 * 60
-MAX_SCAN_INTERVAL: Final = 24 * 60 * 60
+
+# Sensor staleness: flag `stale: true` if the last successful poll is
+# more than this many hours old. Accounts for the 12-hour overnight gap
+# plus some slack for the occasional missed poll.
+STALE_THRESHOLD_HOURS: Final = 24
 
 # Storage (persistent on-disk balance cache, one file per config entry).
 STORAGE_VERSION: Final = 1
 
-# Max jitter added to the first post-restart poll, seconds, per entry.
+# Max jitter added to the catch-up poll on HA startup, seconds.
 STARTUP_JITTER_SECONDS: Final = 60
 
 ENABLE_BANKING_API_URL: Final = "https://api.enablebanking.com"
