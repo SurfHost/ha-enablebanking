@@ -127,7 +127,7 @@ class EnableBankingClient:
                     response.status,
                     method,
                     url,
-                    text[:500],
+                    text[:3000],
                 )
                 if response.status in (401, 403):
                     _LOGGER.error(
