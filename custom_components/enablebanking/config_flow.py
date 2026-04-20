@@ -10,7 +10,13 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.selector import SelectSelector, SelectSelectorConfig
+from homeassistant.helpers.selector import (
+    SelectSelector,
+    SelectSelectorConfig,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
 from .api import EnableBankingClient
 from .const import (
@@ -88,7 +94,7 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required(
                         CONF_PRIVATE_KEY,
                         default=existing[0] if existing else vol.UNDEFINED,
-                    ): str,
+                    ): TextSelector(TextSelectorConfig(multiline=True, type=TextSelectorType.TEXT)),
                     vol.Required(
                         CONF_APP_ID,
                         default=existing[1] if existing else vol.UNDEFINED,
@@ -414,7 +420,7 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required(
                         CONF_PRIVATE_KEY,
                         default=existing[0] if existing else vol.UNDEFINED,
-                    ): str,
+                    ): TextSelector(TextSelectorConfig(multiline=True, type=TextSelectorType.TEXT)),
                     vol.Required(
                         CONF_APP_ID,
                         default=existing[1] if existing else vol.UNDEFINED,
