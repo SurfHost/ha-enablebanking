@@ -2,10 +2,11 @@
   "config": {
     "step": {
       "user": {
-        "title": "Enable Banking — applicatie-JWT",
-        "description": "Plak de JWT (bearer token) van je Enable Banking-applicatie. Hiermee verifieert de integratie zich bij de Enable Banking-API en wordt de lijst met ondersteunde banken opgehaald.",
+        "title": "Enable Banking — applicatiegegevens",
+        "description": "Plak de inhoud van de **privésleutel** (.pem-bestand) van je Enable Banking-applicatie en voer het **applicatie-ID** in (UUID uit de Enable Banking-console). De integratie vernieuwt de JWT automatisch elke 23 uur — je hoeft hier nooit meer naar om te kijken.",
         "data": {
-          "jwt": "JWT (bearer token)"
+          "private_key": "Privésleutel (PEM-inhoud)",
+          "app_id": "Applicatie-ID (UUID)"
         }
       },
       "country": {
@@ -32,9 +33,10 @@
       },
       "reauth_jwt": {
         "title": "Opnieuw authenticeren met Enable Banking",
-        "description": "Je **{aspsp_name}**-toestemming is verlopen of ingetrokken. Bevestig je JWT hieronder (al ingevuld als deze nog geldig is) en autoriseer daarna een nieuwe sessie bij je bank.",
+        "description": "Je **{aspsp_name}**-toestemming is verlopen of ingetrokken. Bevestig je privésleutel en applicatie-ID hieronder (al ingevuld als eerder opgeslagen) en autoriseer daarna een nieuwe sessie bij je bank.",
         "data": {
-          "jwt": "JWT (bearer token)"
+          "private_key": "Privésleutel (PEM-inhoud)",
+          "app_id": "Applicatie-ID (UUID)"
         }
       },
       "reauth_auth": {
@@ -47,7 +49,7 @@
     },
     "error": {
       "cannot_connect": "Kan geen verbinding maken met Enable Banking — controleer je internetverbinding.",
-      "invalid_auth": "De JWT werd afgewezen — controleer of deze is ondertekend met de privésleutel van je applicatie en nog niet verlopen is.",
+      "invalid_auth": "Gegevens afgewezen — controleer of de privésleutel overeenkomt met het applicatie-ID en geldig PEM-formaat heeft.",
       "invalid_session": "Het sessie-ID is onbekend, ingetrokken of verlopen — doorloop de bankAutorisatie opnieuw.",
       "invalid_auth_code": "De autorisatiecode werd afgewezen — kopieer de volledige waarde van `code` uit de omleidings-URL.",
       "unknown": "Onbekende fout — bekijk het Home Assistant-logboek voor meer informatie."

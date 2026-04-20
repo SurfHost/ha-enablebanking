@@ -7,6 +7,8 @@ from typing import Final
 DOMAIN: Final = "enablebanking"
 
 CONF_JWT: Final = "jwt"
+CONF_PRIVATE_KEY: Final = "private_key"
+CONF_APP_ID: Final = "app_id"
 CONF_SESSION_ID: Final = "session_id"
 CONF_SCAN_INTERVAL: Final = "scan_interval"
 CONF_ASPSP_NAME: Final = "aspsp_name"

@@ -14,17 +14,20 @@ from homeassistant.helpers.selector import SelectSelector, SelectSelectorConfig
 
 from .api import EnableBankingClient
 from .const import (
+    CONF_APP_ID,
     CONF_ASPSP_COUNTRY,
     CONF_ASPSP_NAME,
     CONF_AUTH_CODE,
     CONF_CONSENT_EXPIRES_AT,
     CONF_JWT,
+    CONF_PRIVATE_KEY,
     CONF_PSU_TYPE,
     CONF_SESSION_ID,
     DOMAIN,
     PSU_BUSINESS,
     PSU_PERSONAL,
 )
+from .jwt_helper import mint_jwt
 from .errors import (
     EnableBankingAPIError,
     EnableBankingAuthenticationError,
@@ -42,6 +45,8 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
 
     def __init__(self) -> None:
         self._jwt: str = ""
+        self._private_key: str = ""
+        self._app_id: str = ""
         self._aspsps: list[dict[str, Any]] = []
         self._aspsp_name: str = ""
         self._aspsp_country: str = ""
@@ -49,53 +54,67 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         self._auth_url: str = ""
 
     # ------------------------------------------------------------------ #
-    # Step 1: JWT                                                          #
+    # Step 1: private key + app ID                                         #
     # ------------------------------------------------------------------ #
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Collect the Enable Banking application JWT and validate it.
-
-        If a previously-added entry still has a valid JWT we silently reuse
-        it and skip to the country step — adding the 2nd/3rd/4th bank is a
-        one-click affair rather than a re-paste of the same token.
-        """
+        """Collect the private key and app ID, then validate by minting a JWT."""
         errors: dict[str, str] = {}
 
         if user_input is None:
-            # Try to reuse a JWT from an existing entry for this domain.
-            reuse_jwt = self._jwt_from_existing_entries()
-            if reuse_jwt and await self._try_load_aspsps(reuse_jwt):
-                _LOGGER.debug("Reusing JWT from an existing entry; skipping JWT step")
-                self._jwt = reuse_jwt
-                return await self.async_step_country()
+            # Reuse credentials from an existing entry if available.
+            existing = self._credentials_from_existing_entries()
+            if existing:
+                pk, app_id = existing
+                jwt = self._mint_jwt_or_none(pk, app_id)
+                if jwt and await self._try_load_aspsps(jwt):
+                    self._private_key, self._app_id, self._jwt = pk, app_id, jwt
+                    return await self.async_step_country()
         else:
-            jwt = user_input[CONF_JWT].strip()
-            if await self._try_load_aspsps(jwt, errors=errors):
-                self._jwt = jwt
+            pk = user_input[CONF_PRIVATE_KEY].strip()
+            app_id = user_input[CONF_APP_ID].strip()
+            jwt = self._mint_jwt_or_none(pk, app_id, errors)
+            if jwt and await self._try_load_aspsps(jwt, errors=errors):
+                self._private_key, self._app_id, self._jwt = pk, app_id, jwt
                 return await self.async_step_country()
 
+        existing = self._credentials_from_existing_entries()
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
                 {
                     vol.Required(
-                        CONF_JWT,
-                        default=self._jwt_from_existing_entries() or vol.UNDEFINED,
+                        CONF_PRIVATE_KEY,
+                        default=existing[0] if existing else vol.UNDEFINED,
+                    ): str,
+                    vol.Required(
+                        CONF_APP_ID,
+                        default=existing[1] if existing else vol.UNDEFINED,
                     ): str,
                 }
             ),
             errors=errors,
         )
 
+    def _mint_jwt_or_none(
+        self,
+        private_key: str,
+        app_id: str,
+        errors: dict[str, str] | None = None,
+    ) -> str | None:
+        try:
+            return mint_jwt(private_key, app_id)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Could not mint JWT: %s", err)
+            if errors is not None:
+                errors["base"] = "invalid_auth"
+            return None
+
     async def _try_load_aspsps(
         self, jwt: str, errors: dict[str, str] | None = None
     ) -> bool:
-        """Fetch the ASPSP list with ``jwt``; cache on success.
-
-        If ``errors`` is provided, populates it on failure for form display.
-        """
         http = async_get_clientsession(self.hass)
         client = EnableBankingClient.for_config_flow(http, jwt)
         try:
@@ -109,24 +128,23 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "cannot_connect"
             return False
         except Exception:  # noqa: BLE001
-            _LOGGER.exception("Unexpected error validating JWT")
+            _LOGGER.exception("Unexpected error validating credentials")
             if errors is not None:
                 errors["base"] = "unknown"
             return False
         return True
 
-    def _jwt_from_existing_entries(self, exclude_entry=None) -> str | None:
-        """Return a JWT from any existing config entry, most recent first.
-
-        ``exclude_entry`` — skip this entry (used during reauth so we don't
-        just hand the user back the entry's own expired JWT).
-        """
+    def _credentials_from_existing_entries(
+        self, exclude_entry=None
+    ) -> tuple[str, str] | None:
+        """Return (private_key, app_id) from any existing entry, newest first."""
         for entry in reversed(list(self._async_current_entries())):
             if exclude_entry is not None and entry.entry_id == exclude_entry.entry_id:
                 continue
-            jwt = entry.data.get(CONF_JWT)
-            if isinstance(jwt, str) and jwt:
-                return jwt
+            pk = entry.data.get(CONF_PRIVATE_KEY)
+            app_id = entry.data.get(CONF_APP_ID)
+            if isinstance(pk, str) and pk and isinstance(app_id, str) and app_id:
+                return pk, app_id
         return None
 
     # ------------------------------------------------------------------ #
@@ -285,6 +303,8 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
             title=title,
             data={
                 CONF_JWT: self._jwt,
+                CONF_PRIVATE_KEY: self._private_key,
+                CONF_APP_ID: self._app_id,
                 CONF_SESSION_ID: session_id,
                 CONF_ASPSP_NAME: self._aspsp_name,
                 CONF_ASPSP_COUNTRY: self._aspsp_country,
@@ -303,53 +323,42 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reauth_jwt(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Smart reauth.
+        """Re-authenticate using the private key.
 
-        Most of the time the JWT expired but the session is still valid —
-        we detect that by testing the submitted JWT against the stored
-        ``session_id`` directly. If it works, update the JWT and finish
-        immediately (no bank authorisation round trip). Only if the session
-        is actually dead do we fall through to a full bank-reauth flow.
-
-        The JWT field is pre-filled with the most recently-updated JWT
-        across all entries, so once the user fixes the first bank the
-        remaining three are essentially one-click.
+        Fast-path: mint a JWT and validate it against the existing session —
+        if the session is still alive this finishes in one click with no bank
+        round-trip. Slow-path: session is dead, do full bank reauth.
         """
         errors: dict[str, str] = {}
         entry = self._get_reauth_entry()
 
         if user_input is not None:
-            jwt = user_input[CONF_JWT].strip()
+            pk = user_input[CONF_PRIVATE_KEY].strip()
+            app_id = user_input[CONF_APP_ID].strip()
             http = async_get_clientsession(self.hass)
 
-            # Step 1: validate the JWT itself against /aspsps — this works
-            # regardless of which app the JWT belongs to, and avoids false
-            # "invalid_auth" errors when a new app's JWT is submitted against
-            # an old session that belongs to a different application.
-            client = EnableBankingClient.for_config_flow(http, jwt)
-            try:
-                self._aspsps = await client.async_get_aspsps()
-            except EnableBankingAuthenticationError:
-                errors["base"] = "invalid_auth"
-            except EnableBankingConnectionError:
-                errors["base"] = "cannot_connect"
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception("Unexpected error validating JWT during reauth")
-                errors["base"] = "unknown"
+            jwt = self._mint_jwt_or_none(pk, app_id, errors)
 
-            if not errors:
-                # Step 2: fast-path — try the JWT against the existing session.
-                # This succeeds when only the JWT expired but the session is
-                # still alive and belongs to the same application.
+            if jwt:
+                client = EnableBankingClient.for_config_flow(http, jwt)
+                try:
+                    self._aspsps = await client.async_get_aspsps()
+                except EnableBankingAuthenticationError:
+                    errors["base"] = "invalid_auth"
+                except EnableBankingConnectionError:
+                    errors["base"] = "cannot_connect"
+                except Exception:  # noqa: BLE001
+                    _LOGGER.exception("Unexpected error validating credentials during reauth")
+                    errors["base"] = "unknown"
+
+            if not errors and jwt:
+                # Fast-path: check if existing session is still alive.
                 existing_session_id = entry.data.get(CONF_SESSION_ID, "")
                 if existing_session_id:
                     session_client = EnableBankingClient(http, jwt, existing_session_id)
                     try:
                         await session_client.async_validate()
-                    except (
-                        EnableBankingAuthenticationError,
-                        EnableBankingSessionError,
-                    ):
+                    except (EnableBankingAuthenticationError, EnableBankingSessionError):
                         pass  # session dead or different app — fall through
                     except EnableBankingConnectionError:
                         errors["base"] = "cannot_connect"
@@ -358,27 +367,28 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                         errors["base"] = "unknown"
                     else:
                         _LOGGER.debug(
-                            "Smart reauth: new JWT validates against existing "
+                            "Smart reauth: credentials validate against existing "
                             "session %s — skipping bank authorisation",
                             existing_session_id[:8],
                         )
                         return self.async_update_reload_and_abort(
                             entry,
-                            data_updates={CONF_JWT: jwt},
+                            data_updates={
+                                CONF_JWT: jwt,
+                                CONF_PRIVATE_KEY: pk,
+                                CONF_APP_ID: app_id,
+                            },
                         )
 
-            if not errors:
-                # Step 3: JWT is valid but session is dead/incompatible —
-                # proceed to full bank authorisation round-trip.
-                self._jwt = jwt
+            if not errors and jwt:
+                # Session dead — full bank reauth.
+                self._jwt, self._private_key, self._app_id = jwt, pk, app_id
                 self._aspsp_name = entry.data.get(CONF_ASPSP_NAME, "")
                 self._aspsp_country = entry.data.get(CONF_ASPSP_COUNTRY, "")
                 self._psu_type = entry.data.get(CONF_PSU_TYPE, PSU_PERSONAL)
                 try:
                     self._auth_url = await client.async_start_auth(
-                        self._aspsp_name,
-                        self._aspsp_country,
-                        self._psu_type,
+                        self._aspsp_name, self._aspsp_country, self._psu_type
                     )
                 except EnableBankingConnectionError:
                     errors["base"] = "cannot_connect"
@@ -388,17 +398,28 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                 else:
                     return await self.async_step_reauth_auth()
 
-        # Pre-fill with any fresher JWT we have from another entry; fall
-        # back to this entry's stored (possibly expired) JWT.
-        pre_fill = (
-            self._jwt_from_existing_entries(exclude_entry=entry)
-            or entry.data.get(CONF_JWT, "")
-        )
+        existing = self._credentials_from_existing_entries(exclude_entry=entry)
+        # Fall back to this entry's own stored credentials if no other entry has them.
+        if not existing:
+            pk_fb = entry.data.get(CONF_PRIVATE_KEY, "")
+            app_id_fb = entry.data.get(CONF_APP_ID, "")
+            if pk_fb and app_id_fb:
+                existing = (pk_fb, app_id_fb)
+
         aspsp_name = entry.data.get(CONF_ASPSP_NAME, "your bank")
         return self.async_show_form(
             step_id="reauth_jwt",
             data_schema=vol.Schema(
-                {vol.Required(CONF_JWT, default=pre_fill or vol.UNDEFINED): str}
+                {
+                    vol.Required(
+                        CONF_PRIVATE_KEY,
+                        default=existing[0] if existing else vol.UNDEFINED,
+                    ): str,
+                    vol.Required(
+                        CONF_APP_ID,
+                        default=existing[1] if existing else vol.UNDEFINED,
+                    ): str,
+                }
             ),
             description_placeholders={"aspsp_name": aspsp_name},
             errors=errors,
@@ -435,6 +456,8 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                     reauth_entry,
                     data_updates={
                         CONF_JWT: self._jwt,
+                        CONF_PRIVATE_KEY: self._private_key,
+                        CONF_APP_ID: self._app_id,
                         CONF_SESSION_ID: session_id,
                         CONF_CONSENT_EXPIRES_AT: consent_expires_at,
                     },

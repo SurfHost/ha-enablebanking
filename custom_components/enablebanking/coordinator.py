@@ -42,14 +42,18 @@ from homeassistant.util import dt as dt_util
 
 from .api import EnableBankingClient
 from .const import (
+    CONF_APP_ID,
     CONF_ASPSP_NAME,
     CONF_CONSENT_EXPIRES_AT,
+    CONF_JWT,
+    CONF_PRIVATE_KEY,
     CONSENT_WARNING_DAYS,
     DOMAIN,
     POLL_HOURS,
     STALE_THRESHOLD_HOURS,
     STORAGE_VERSION,
 )
+from .jwt_helper import JWT_TTL_SECONDS, jwt_seconds_remaining, mint_jwt
 from .errors import (
     EnableBankingAPIError,
     EnableBankingAuthenticationError,
@@ -220,8 +224,42 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
     # Refresh                                                              #
     # ------------------------------------------------------------------ #
 
+    async def _async_maybe_renew_jwt(self) -> None:
+        """Silently regenerate the JWT if it expires within 30 minutes.
+
+        Only runs when a private key is stored in the config entry (new-style
+        setup). Old entries without a private key are unaffected.
+        """
+        private_key = self.config_entry.data.get(CONF_PRIVATE_KEY)
+        app_id = self.config_entry.data.get(CONF_APP_ID)
+        if not private_key or not app_id:
+            return
+
+        remaining = jwt_seconds_remaining(self.client._jwt)
+        if remaining > 1800:  # more than 30 min left — nothing to do
+            return
+
+        _LOGGER.debug(
+            "JWT for entry %s expires in %ds — auto-renewing",
+            self.config_entry.entry_id,
+            remaining,
+        )
+        try:
+            new_jwt = mint_jwt(private_key, app_id)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Failed to auto-renew JWT: %s", err)
+            return
+
+        self.client.update_jwt(new_jwt)
+        self.hass.config_entries.async_update_entry(
+            self.config_entry,
+            data={**self.config_entry.data, CONF_JWT: new_jwt},
+        )
+        _LOGGER.debug("JWT auto-renewed for entry %s", self.config_entry.entry_id)
+
     async def _async_update_data(self) -> EnableBankingData:
         """Fetch balances. NEVER raises — always returns cached data on error."""
+        await self._async_maybe_renew_jwt()
         now = dt_util.utcnow()
         skip_uids = {
             uid

@@ -2,10 +2,11 @@
   "config": {
     "step": {
       "user": {
-        "title": "Enable Banking — application JWT",
-        "description": "Paste the JWT (bearer token) for your Enable Banking application. This authenticates the integration to Enable Banking's API and is used to fetch the list of supported banks.",
+        "title": "Enable Banking — application credentials",
+        "description": "Paste the contents of your Enable Banking application's **private key** (.pem file) and enter the **application ID** (UUID from the Enable Banking console). The integration will automatically renew the JWT every 23 hours so you never need to touch this again.",
         "data": {
-          "jwt": "JWT (bearer token)"
+          "private_key": "Private key (PEM content)",
+          "app_id": "Application ID (UUID)"
         }
       },
       "country": {
@@ -32,9 +33,10 @@
       },
       "reauth_jwt": {
         "title": "Re-authenticate with Enable Banking",
-        "description": "Your **{aspsp_name}** consent has expired or been revoked. Confirm your JWT below (it is pre-filled if it is still valid) and then authorise a new session at your bank.",
+        "description": "Your **{aspsp_name}** consent has expired or been revoked. Confirm your private key and application ID below (pre-filled if already stored) and then authorise a new session at your bank.",
         "data": {
-          "jwt": "JWT (bearer token)"
+          "private_key": "Private key (PEM content)",
+          "app_id": "Application ID (UUID)"
         }
       },
       "reauth_auth": {
@@ -47,7 +49,7 @@
     },
     "error": {
       "cannot_connect": "Cannot connect to Enable Banking — check your internet connection.",
-      "invalid_auth": "The JWT was rejected — check that it is signed with your application's private key and has not expired.",
+      "invalid_auth": "Credentials rejected — check that the private key matches the application ID and is in valid PEM format.",
       "invalid_session": "The session ID is unknown, revoked, or expired — complete the bank authorisation again.",
       "invalid_auth_code": "The authorisation code was rejected — make sure you copied the full `code` value from the redirect URL.",
       "unknown": "Unexpected error — check the Home Assistant log for details."

@@ -68,6 +68,10 @@ class EnableBankingClient:
         """Create a client for config-flow steps that precede session creation."""
         return cls(session, jwt, "")
 
+    def update_jwt(self, new_jwt: str) -> None:
+        """Replace the active JWT (called by coordinator on auto-renewal)."""
+        self._jwt = new_jwt
+
     @property
     def _headers(self) -> dict[str, str]:
         return {
