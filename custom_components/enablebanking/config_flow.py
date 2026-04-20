@@ -322,65 +322,71 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
             jwt = user_input[CONF_JWT].strip()
             http = async_get_clientsession(self.hass)
 
-            # Fast-path: try the new JWT against the existing session.
-            existing_session_id = entry.data.get(CONF_SESSION_ID, "")
-            if existing_session_id:
-                session_client = EnableBankingClient(http, jwt, existing_session_id)
-                try:
-                    await session_client.async_validate()
-                except EnableBankingAuthenticationError:
-                    errors["base"] = "invalid_auth"
-                except EnableBankingSessionError:
-                    # Session itself is dead — fall through to full reauth
-                    errors.pop("base", None)
-                except EnableBankingConnectionError:
-                    errors["base"] = "cannot_connect"
-                except Exception:  # noqa: BLE001
-                    _LOGGER.exception("Unexpected error during smart reauth")
-                    errors["base"] = "unknown"
-                else:
-                    _LOGGER.debug(
-                        "Smart reauth: new JWT validates against existing "
-                        "session %s — skipping bank authorisation",
-                        existing_session_id[:8],
-                    )
-                    return self.async_update_reload_and_abort(
-                        entry,
-                        data_updates={CONF_JWT: jwt},
-                    )
+            # Step 1: validate the JWT itself against /aspsps — this works
+            # regardless of which app the JWT belongs to, and avoids false
+            # "invalid_auth" errors when a new app's JWT is submitted against
+            # an old session that belongs to a different application.
+            client = EnableBankingClient.for_config_flow(http, jwt)
+            try:
+                self._aspsps = await client.async_get_aspsps()
+            except EnableBankingAuthenticationError:
+                errors["base"] = "invalid_auth"
+            except EnableBankingConnectionError:
+                errors["base"] = "cannot_connect"
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Unexpected error validating JWT during reauth")
+                errors["base"] = "unknown"
 
-            # Either the session is dead or we have no existing session:
-            # validate JWT alone and proceed to full bank-reauth.
-            if "base" not in errors:
-                client = EnableBankingClient.for_config_flow(http, jwt)
-                try:
-                    await client.async_get_aspsps()
-                except EnableBankingAuthenticationError:
-                    errors["base"] = "invalid_auth"
-                except EnableBankingConnectionError:
-                    errors["base"] = "cannot_connect"
-                except Exception:  # noqa: BLE001
-                    _LOGGER.exception("Unexpected error validating JWT during reauth")
-                    errors["base"] = "unknown"
-
-                if not errors:
-                    self._jwt = jwt
-                    self._aspsp_name = entry.data.get(CONF_ASPSP_NAME, "")
-                    self._aspsp_country = entry.data.get(CONF_ASPSP_COUNTRY, "")
-                    self._psu_type = entry.data.get(CONF_PSU_TYPE, PSU_PERSONAL)
+            if not errors:
+                # Step 2: fast-path — try the JWT against the existing session.
+                # This succeeds when only the JWT expired but the session is
+                # still alive and belongs to the same application.
+                existing_session_id = entry.data.get(CONF_SESSION_ID, "")
+                if existing_session_id:
+                    session_client = EnableBankingClient(http, jwt, existing_session_id)
                     try:
-                        self._auth_url = await client.async_start_auth(
-                            self._aspsp_name,
-                            self._aspsp_country,
-                            self._psu_type,
-                        )
+                        await session_client.async_validate()
+                    except (
+                        EnableBankingAuthenticationError,
+                        EnableBankingSessionError,
+                    ):
+                        pass  # session dead or different app — fall through
                     except EnableBankingConnectionError:
                         errors["base"] = "cannot_connect"
                     except Exception:  # noqa: BLE001
-                        _LOGGER.exception("Unexpected error starting reauth")
+                        _LOGGER.exception("Unexpected error during smart reauth")
                         errors["base"] = "unknown"
                     else:
-                        return await self.async_step_reauth_auth()
+                        _LOGGER.debug(
+                            "Smart reauth: new JWT validates against existing "
+                            "session %s — skipping bank authorisation",
+                            existing_session_id[:8],
+                        )
+                        return self.async_update_reload_and_abort(
+                            entry,
+                            data_updates={CONF_JWT: jwt},
+                        )
+
+            if not errors:
+                # Step 3: JWT is valid but session is dead/incompatible —
+                # proceed to full bank authorisation round-trip.
+                self._jwt = jwt
+                self._aspsp_name = entry.data.get(CONF_ASPSP_NAME, "")
+                self._aspsp_country = entry.data.get(CONF_ASPSP_COUNTRY, "")
+                self._psu_type = entry.data.get(CONF_PSU_TYPE, PSU_PERSONAL)
+                try:
+                    self._auth_url = await client.async_start_auth(
+                        self._aspsp_name,
+                        self._aspsp_country,
+                        self._psu_type,
+                    )
+                except EnableBankingConnectionError:
+                    errors["base"] = "cannot_connect"
+                except Exception:  # noqa: BLE001
+                    _LOGGER.exception("Unexpected error starting reauth")
+                    errors["base"] = "unknown"
+                else:
+                    return await self.async_step_reauth_auth()
 
         # Pre-fill with any fresher JWT we have from another entry; fall
         # back to this entry's stored (possibly expired) JWT.

@@ -75,6 +75,29 @@ class EnableBankingClient:
             "Accept": "application/json",
         }
 
+    def _jwt_debug_info(self) -> str:
+        """Return non-secret JWT header claims for debug logging."""
+        try:
+            import base64
+            import json as _json
+            header_b64 = self._jwt.split(".")[0]
+            # add padding
+            header_b64 += "=" * (-len(header_b64) % 4)
+            header = _json.loads(base64.urlsafe_b64decode(header_b64))
+            payload_b64 = self._jwt.split(".")[1]
+            payload_b64 += "=" * (-len(payload_b64) % 4)
+            payload = _json.loads(base64.urlsafe_b64decode(payload_b64))
+            import time
+            exp = payload.get("exp", 0)
+            remaining = exp - int(time.time())
+            return (
+                f"kid={header.get('kid', '?')!r} "
+                f"alg={header.get('alg', '?')!r} "
+                f"exp={exp} (expires in {remaining}s)"
+            )
+        except Exception:  # noqa: BLE001
+            return "<could not decode JWT>"
+
     async def _request(
         self,
         method: str,
@@ -84,6 +107,7 @@ class EnableBankingClient:
         json: dict[str, Any] | None = None,
     ) -> Any:
         url = f"{ENABLE_BANKING_API_URL}{path}"
+        _LOGGER.debug("Enable Banking request: %s %s", method, url)
         try:
             async with self._session.request(
                 method,
@@ -94,9 +118,23 @@ class EnableBankingClient:
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as response:
                 text = await response.text()
+                _LOGGER.debug(
+                    "Enable Banking response: HTTP %s for %s %s — body: %s",
+                    response.status,
+                    method,
+                    url,
+                    text[:500],
+                )
                 if response.status in (401, 403):
+                    _LOGGER.error(
+                        "Enable Banking JWT rejected (HTTP %s). "
+                        "JWT info: %s. Response: %s",
+                        response.status,
+                        self._jwt_debug_info(),
+                        text[:500],
+                    )
                     raise EnableBankingAuthenticationError(
-                        f"Enable Banking rejected the JWT (HTTP {response.status})"
+                        f"Enable Banking rejected the JWT (HTTP {response.status}): {text[:200]}"
                     )
                 if response.status == 404:
                     raise EnableBankingSessionError(
