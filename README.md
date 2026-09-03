@@ -219,6 +219,11 @@ You do not need to regenerate your application private key unless you revoked it
 | Sensor shows `unavailable` | Consent expired or bank revoked access, use Reconfigure |
 | Balance stuck / not updating | Check HA log at `logger: custom_components.enablebanking: debug` |
 
+Debug logging records the *shape* of each API response (keys and value types,
+e.g. `{accounts: [str x 2], aspsp: {country: str, name: str}}`) rather than the
+body itself, so IBANs, balances and account-holder names do not reach
+`home-assistant.log`. Logs are safe to attach to an issue as-is.
+
 ## License
 
 MIT
