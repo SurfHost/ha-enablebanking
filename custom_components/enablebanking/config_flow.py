@@ -89,10 +89,17 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema(
                 {
-                    vol.Required(
-                        CONF_PRIVATE_KEY,
-                        default=existing[0] if existing else vol.UNDEFINED,
-                    ): TextSelector(TextSelectorConfig(multiline=True, type=TextSelectorType.TEXT)),
+                    # No default. A schema default is serialised to the browser
+                    # and rendered in the field, so pre-filling this would push
+                    # the RSA private key over the websocket and display it in
+                    # clear on screen — and a multiline selector is a textarea,
+                    # which cannot be masked whatever `type` is set to. The
+                    # convenience it existed for is preserved above, where
+                    # stored credentials are reused entirely server-side.
+                    vol.Required(CONF_PRIVATE_KEY): TextSelector(
+                        TextSelectorConfig(multiline=True, type=TextSelectorType.TEXT)
+                    ),
+                    # The application ID is a plain UUID, not a secret.
                     vol.Required(
                         CONF_APP_ID,
                         default=existing[1] if existing else vol.UNDEFINED,
@@ -306,112 +313,177 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
     # ------------------------------------------------------------------ #
 
     async def async_step_reauth(self, entry_data: dict[str, Any]) -> ConfigFlowResult:
+        """Start reauth, preferring credentials already on disk.
+
+        If this entry (or a sibling entry) already holds a usable private key,
+        there is nothing to ask the user for: the key can be read and signed
+        with entirely server-side. Only when no stored key mints a JWT do we
+        fall through to the form that asks for one.
+        """
+        stored = self._stored_credentials()
+        if stored:
+            pk, app_id = stored
+            jwt = self._mint_jwt_or_none(pk, app_id)
+            if jwt:
+                self._private_key, self._app_id, self._jwt = pk, app_id, jwt
+                return await self.async_step_reauth_confirm()
         return await self.async_step_reauth_jwt()
+
+    def _stored_credentials(self) -> tuple[str, str] | None:
+        """Credentials for this reauth: a sibling entry's, else this entry's own."""
+        entry = self._get_reauth_entry()
+        existing = self._credentials_from_existing_entries(exclude_entry=entry)
+        if existing:
+            return existing
+        pk = entry.data.get(CONF_PRIVATE_KEY, "")
+        app_id = entry.data.get(CONF_APP_ID, "")
+        if isinstance(pk, str) and pk and isinstance(app_id, str) and app_id:
+            return pk, app_id
+        return None
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm reauth using the stored private key.
+
+        Deliberately shows no credential fields. The key is already on disk, so
+        rendering it in a form would mean sending it to the browser and back
+        for no gain — and a multiline selector is a textarea, which cannot be
+        masked. One button is also less work than reviewing a pre-filled PEM.
+        """
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            result = await self._async_reauth_continue(
+                self._private_key, self._app_id, self._jwt, errors
+            )
+            if result is not None:
+                return result
+            if errors.get("base") == "invalid_auth":
+                # The stored key is no longer accepted, so there is something
+                # to ask for after all.
+                return await self.async_step_reauth_jwt()
+
+        entry = self._get_reauth_entry()
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema({}),
+            description_placeholders={"aspsp_name": entry.data.get(CONF_ASPSP_NAME, "your bank")},
+            errors=errors,
+        )
 
     async def async_step_reauth_jwt(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Re-authenticate using the private key.
-
-        Fast-path: mint a JWT and validate it against the existing session.
-        If the session is still alive this finishes in one click with no bank
-        round-trip. Slow-path: session is dead, do full bank reauth.
-        """
+        """Ask for a private key, for when no stored one works any more."""
         errors: dict[str, str] = {}
         entry = self._get_reauth_entry()
 
         if user_input is not None:
             pk = user_input[CONF_PRIVATE_KEY].strip()
             app_id = user_input[CONF_APP_ID].strip()
-            http = async_get_clientsession(self.hass)
-
             jwt = self._mint_jwt_or_none(pk, app_id, errors)
-
             if jwt:
-                client = EnableBankingClient.for_config_flow(http, jwt)
-                try:
-                    self._aspsps = await client.async_get_aspsps()
-                except EnableBankingAuthenticationError:
-                    errors["base"] = "invalid_auth"
-                except EnableBankingConnectionError:
-                    errors["base"] = "cannot_connect"
-                except Exception:
-                    _LOGGER.exception("Unexpected error validating credentials during reauth")
-                    errors["base"] = "unknown"
+                result = await self._async_reauth_continue(pk, app_id, jwt, errors)
+                if result is not None:
+                    return result
 
-            if not errors and jwt:
-                # Fast-path: check if existing session is still alive.
-                existing_session_id = entry.data.get(CONF_SESSION_ID, "")
-                if existing_session_id:
-                    session_client = EnableBankingClient(http, jwt, existing_session_id)
-                    try:
-                        await session_client.async_validate()
-                    except (EnableBankingAuthenticationError, EnableBankingSessionError):
-                        pass  # session dead or different app > fall through
-                    except EnableBankingConnectionError:
-                        errors["base"] = "cannot_connect"
-                    except Exception:
-                        _LOGGER.exception("Unexpected error during smart reauth")
-                        errors["base"] = "unknown"
-                    else:
-                        _LOGGER.debug(
-                            "Smart reauth: credentials validate against existing "
-                            "session %s > skipping bank authorisation",
-                            existing_session_id[:8],
-                        )
-                        return self.async_update_reload_and_abort(
-                            entry,
-                            data_updates={
-                                CONF_JWT: jwt,
-                                CONF_PRIVATE_KEY: pk,
-                                CONF_APP_ID: app_id,
-                            },
-                        )
-
-            if not errors and jwt:
-                # Session dead > full bank reauth.
-                self._jwt, self._private_key, self._app_id = jwt, pk, app_id
-                self._aspsp_name = entry.data.get(CONF_ASPSP_NAME, "")
-                self._aspsp_country = entry.data.get(CONF_ASPSP_COUNTRY, "")
-                self._psu_type = entry.data.get(CONF_PSU_TYPE, PSU_PERSONAL)
-                try:
-                    self._auth_url = await client.async_start_auth(
-                        self._aspsp_name, self._aspsp_country, self._psu_type
-                    )
-                except EnableBankingConnectionError:
-                    errors["base"] = "cannot_connect"
-                except Exception:
-                    _LOGGER.exception("Unexpected error starting reauth")
-                    errors["base"] = "unknown"
-                else:
-                    return await self.async_step_reauth_auth()
-
-        existing = self._credentials_from_existing_entries(exclude_entry=entry)
-        # Fall back to this entry's own stored credentials if no other entry has them.
-        if not existing:
-            pk_fb = entry.data.get(CONF_PRIVATE_KEY, "")
-            app_id_fb = entry.data.get(CONF_APP_ID, "")
-            if pk_fb and app_id_fb:
-                existing = (pk_fb, app_id_fb)
-
-        aspsp_name = entry.data.get(CONF_ASPSP_NAME, "your bank")
         return self.async_show_form(
             step_id="reauth_jwt",
             data_schema=vol.Schema(
                 {
-                    vol.Required(
-                        CONF_PRIVATE_KEY,
-                        default=existing[0] if existing else vol.UNDEFINED,
-                    ): TextSelector(TextSelectorConfig(multiline=True, type=TextSelectorType.TEXT)),
+                    # No default, for the same reason as the user step: a schema
+                    # default would ship the stored PEM to the browser.
+                    vol.Required(CONF_PRIVATE_KEY): TextSelector(
+                        TextSelectorConfig(multiline=True, type=TextSelectorType.TEXT)
+                    ),
                     vol.Required(
                         CONF_APP_ID,
-                        default=existing[1] if existing else vol.UNDEFINED,
+                        default=entry.data.get(CONF_APP_ID) or vol.UNDEFINED,
                     ): str,
                 }
             ),
-            description_placeholders={"aspsp_name": aspsp_name},
+            description_placeholders={"aspsp_name": entry.data.get(CONF_ASPSP_NAME, "your bank")},
             errors=errors,
         )
+
+    async def _async_reauth_continue(
+        self,
+        pk: str,
+        app_id: str,
+        jwt: str,
+        errors: dict[str, str],
+    ) -> ConfigFlowResult | None:
+        """Validate credentials, then either finish or start a bank round-trip.
+
+        Shared by both reauth entry points. Returns ``None`` when it has filled
+        ``errors`` and the caller should redisplay its own form.
+        """
+        entry = self._get_reauth_entry()
+        http = async_get_clientsession(self.hass)
+        client = EnableBankingClient.for_config_flow(http, jwt)
+
+        try:
+            self._aspsps = await client.async_get_aspsps()
+        except EnableBankingAuthenticationError:
+            errors["base"] = "invalid_auth"
+            return None
+        except EnableBankingConnectionError:
+            errors["base"] = "cannot_connect"
+            return None
+        except Exception:
+            _LOGGER.exception("Unexpected error validating credentials during reauth")
+            errors["base"] = "unknown"
+            return None
+
+        # Fast path: the bank session may well still be alive, in which case
+        # there is no need to send the user back to their bank at all.
+        existing_session_id = entry.data.get(CONF_SESSION_ID, "")
+        if existing_session_id:
+            session_client = EnableBankingClient(http, jwt, existing_session_id)
+            try:
+                await session_client.async_validate()
+            except (EnableBankingAuthenticationError, EnableBankingSessionError):
+                pass  # session dead or different app > fall through
+            except EnableBankingConnectionError:
+                errors["base"] = "cannot_connect"
+                return None
+            except Exception:
+                _LOGGER.exception("Unexpected error during smart reauth")
+                errors["base"] = "unknown"
+                return None
+            else:
+                _LOGGER.debug(
+                    "Smart reauth: credentials validate against existing "
+                    "session %s > skipping bank authorisation",
+                    existing_session_id[:8],
+                )
+                return self.async_update_reload_and_abort(
+                    entry,
+                    data_updates={
+                        CONF_JWT: jwt,
+                        CONF_PRIVATE_KEY: pk,
+                        CONF_APP_ID: app_id,
+                    },
+                )
+
+        # Slow path: session is gone, so a full bank authorisation is needed.
+        self._jwt, self._private_key, self._app_id = jwt, pk, app_id
+        self._aspsp_name = entry.data.get(CONF_ASPSP_NAME, "")
+        self._aspsp_country = entry.data.get(CONF_ASPSP_COUNTRY, "")
+        self._psu_type = entry.data.get(CONF_PSU_TYPE, PSU_PERSONAL)
+        try:
+            self._auth_url = await client.async_start_auth(
+                self._aspsp_name, self._aspsp_country, self._psu_type
+            )
+        except EnableBankingConnectionError:
+            errors["base"] = "cannot_connect"
+            return None
+        except Exception:
+            _LOGGER.exception("Unexpected error starting reauth")
+            errors["base"] = "unknown"
+            return None
+        return await self.async_step_reauth_auth()
 
     async def async_step_reauth_auth(
         self, user_input: dict[str, Any] | None = None

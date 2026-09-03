@@ -39,7 +39,7 @@ You only need to do this once. The same private key and application ID serve eve
 
 That is all. You do **not** generate a JWT by hand: the config flow takes the private key plus the application ID and mints the RS256 token itself, then renews it every 23 hours (Enable Banking caps token lifetime at 24 h). Nothing to re-paste, ever.
 
-The private key is stored in the config entry, so it lives in `.storage/core.config_entries` on your HA instance in plain text, like every other credential HA holds. Treat a backup of that directory accordingly.
+The private key is stored in the config entry, so it lives in `.storage/core.config_entries` on your HA instance in plain text, like every other credential HA holds. Treat a backup of that directory accordingly. Once stored it is only ever read server-side — no config flow step sends it back to your browser or renders it on screen.
 
 `scripts/generate_jwt.py` is still in the repo, but only as a debugging aid for poking the Enable Banking API with `curl` outside Home Assistant. It is not part of the setup flow.
 
@@ -71,7 +71,7 @@ Or: **Settings > Devices & Services > Add Integration > Enable Banking**.
 
 The config flow has four steps:
 
-1. **Credentials** > paste the full contents of your application's private key (.pem) into the multi-line field and enter the application ID. The flow validates them by minting a JWT and fetching the bank list. On a second or later bank both fields come pre-filled from the entry you already have.
+1. **Credentials** > paste the full contents of your application's private key (.pem) into the multi-line field and enter the application ID. The flow validates them by minting a JWT and fetching the bank list. On a second or later bank this step is skipped entirely — the key stored by your first entry is reused server-side, so it is never sent back to your browser.
 2. **Country** > pick the country the bank is in. This just filters the (long) bank list.
 3. **Bank** > pick a bank from the dropdown (populated live from Enable Banking's ASPSP list) and select *Personal* or *Business*.
 4. **Authorise** > the flow shows a link to your bank's login page. Click it, log in, and you'll be redirected to `enablebanking.com?code=...`. Copy the `code` value from the URL bar and paste it back in HA. The integration exchanges it for a session and creates the balance sensors.
@@ -205,7 +205,7 @@ PSD2 limits unattended Account Information consent to **180 days**, after which 
 
 ### Renewing consent
 
-Click the **Reconfigure** button on the integration card (or the notification link), or go to **Settings > Devices & Services > Enable Banking > your bank > Reconfigure**. The reauth flow pre-fills your private key and application ID and, if the bank session really is gone, asks you to complete a fresh bank authorisation (step 4 of the setup flow above).
+Click the **Reconfigure** button on the integration card (or the notification link), or go to **Settings > Devices & Services > Enable Banking > your bank > Reconfigure**. The reauth flow signs with the private key already stored for the integration, so there is nothing to paste: you get a single confirmation button, and if the bank session really is gone it then asks you to complete a fresh bank authorisation (step 4 of the setup flow above). You are only asked for the key again if the stored one has stopped working — for example because you revoked it at Enable Banking.
 
 You do not need to regenerate your application private key unless you revoked it at Enable Banking. The JWT is never your problem: the integration signs and renews it on its own.
 

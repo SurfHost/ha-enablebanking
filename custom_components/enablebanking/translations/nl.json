@@ -31,9 +31,13 @@
           "auth_code": "Autorisatiecode"
         }
       },
-      "reauth_jwt": {
+      "reauth_confirm": {
         "title": "Opnieuw authenticeren met Enable Banking",
-        "description": "Je **{aspsp_name}**-toestemming is verlopen of ingetrokken. Bevestig je privésleutel en applicatie-ID hieronder (al ingevuld als ze eerder zijn opgeslagen) en autoriseer daarna een nieuwe sessie bij je bank.",
+        "description": "Je **{aspsp_name}**-toestemming moet worden vernieuwd. De al opgeslagen privésleutel wordt gebruikt, dus je hoeft niets in te vullen — verstuur om door te gaan. Als de banksessie nog geldig blijkt, is het hiermee klaar; anders word je naar je bank gestuurd om een nieuwe te autoriseren."
+      },
+      "reauth_jwt": {
+        "title": "Voer je Enable Banking-gegevens in",
+        "description": "De opgeslagen privésleutel voor **{aspsp_name}** wordt niet meer geaccepteerd. Plak opnieuw de inhoud van de privésleutel (.pem-bestand) van je applicatie en autoriseer daarna een nieuwe sessie bij je bank.",
         "data": {
           "private_key": "Privésleutel (PEM-inhoud)",
           "app_id": "Applicatie-ID (UUID)"

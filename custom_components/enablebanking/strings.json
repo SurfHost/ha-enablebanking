@@ -31,9 +31,13 @@
           "auth_code": "Authorisation code"
         }
       },
-      "reauth_jwt": {
+      "reauth_confirm": {
         "title": "Re-authenticate with Enable Banking",
-        "description": "Your **{aspsp_name}** consent has expired or been revoked. Confirm your private key and application ID below (pre-filled if they are already stored) and then authorise a new session at your bank.",
+        "description": "Your **{aspsp_name}** consent needs renewing. The private key already stored for this integration will be used, so there is nothing to enter — submit to continue. If the bank session turns out to still be valid this finishes right here; otherwise you will be sent to your bank to authorise a new one."
+      },
+      "reauth_jwt": {
+        "title": "Enter your Enable Banking credentials",
+        "description": "The stored private key for **{aspsp_name}** is no longer accepted. Paste the contents of your application's private key (.pem file) again, then authorise a new session at your bank.",
         "data": {
           "private_key": "Private key (PEM content)",
           "app_id": "Application ID (UUID)"
