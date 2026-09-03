@@ -47,7 +47,7 @@ _LOGGER = logging.getLogger(__name__)
 class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Enable Banking."""
 
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self) -> None:
         self._jwt: str = ""
