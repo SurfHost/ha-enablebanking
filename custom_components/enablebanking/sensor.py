@@ -58,6 +58,40 @@ BALANCE_SENSOR = EnableBankingSensorDescription(
 )
 
 
+@dataclass(frozen=True, kw_only=True)
+class EnableBankingSpendDescription(SensorEntityDescription):
+    """A rolling spend total over a fixed number of days."""
+
+    days: int
+
+
+#: Debits only. Mirrors monzo's `spend_today` in Home Assistant core, which is
+#: the closest thing to a house style for this. Not `device_class=MONETARY`
+#: with `state_class=TOTAL` by accident: TOTAL (rather than TOTAL_INCREASING)
+#: is right because a rolling window goes down as well as up when old days
+#: fall out of it.
+SPEND_SENSORS: tuple[EnableBankingSpendDescription, ...] = (
+    EnableBankingSpendDescription(
+        key="spend_today",
+        translation_key="spend_today",
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=2,
+        icon="mdi:cart-outline",
+        days=1,
+    ),
+    EnableBankingSpendDescription(
+        key="spend_30d",
+        translation_key="spend_30d",
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=2,
+        icon="mdi:calendar-month-outline",
+        days=30,
+    ),
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: EnableBankingConfigEntry,
@@ -89,13 +123,23 @@ async def async_setup_entry(
         # boot after an HA restart, before the first post-boot poll has run).
         seen_ids.update(coordinator.cached_stable_ids())
 
+        spend_entities: list[EnableBankingSpendSensor] = []
         for stable_id in seen_ids:
             if stable_id in known:
                 continue
             known.add(stable_id)
             new_entities.append(EnableBankingBalanceSensor(coordinator, BALANCE_SENSOR, stable_id))
+            # Only when transactions are switched on: without them these would
+            # sit at unknown forever, which reads like a broken integration.
+            if coordinator.transactions_enabled:
+                spend_entities.extend(
+                    EnableBankingSpendSensor(coordinator, description, stable_id)
+                    for description in SPEND_SENSORS
+                )
         if new_entities:
             async_add_entities(new_entities)
+        if spend_entities:
+            async_add_entities(spend_entities)
 
         # Give IBAN accounts a clean `sensor.<iban>` entity_id.
         _apply_iban_entity_ids(hass, entry, coordinator)
@@ -282,3 +326,38 @@ def _is_stale(account: AccountBalance, update_interval: timedelta | None) -> boo
     # below is Any as far as mypy is concerned. bool() keeps strict mode happy
     # without an ignore comment.
     return bool((utcnow() - account.last_polled_at) > 2 * interval)
+
+
+class EnableBankingSpendSensor(EnableBankingEntity, SensorEntity):
+    """Rolling debit total for one account.
+
+    Reads the coordinator's own per-day totals rather than the transaction
+    list, so nothing here depends on a full history being held in memory.
+    """
+
+    entity_description: EnableBankingSpendDescription
+    coordinator: EnableBankingCoordinator
+
+    @property
+    def native_unit_of_measurement(self) -> str | None:
+        """The account's currency, so a non-euro account is not labelled in euro."""
+        account = self._current_account
+        if account is not None and account.currency:
+            return account.currency.upper()
+        return None
+
+    @property
+    def _current_account(self) -> AccountBalance | None:
+        data = self.coordinator.data
+        if data is not None and self._stable_id in data.accounts:
+            return data.accounts[self._stable_id]
+        return self.coordinator.cached_account(self._stable_id)
+
+    @property
+    def available(self) -> bool:
+        """Match the balance sensor: last known value beats unavailable."""
+        return self._current_account is not None
+
+    @property
+    def native_value(self) -> StateType:
+        return self.coordinator.spend_over(self._stable_id, self.entity_description.days)

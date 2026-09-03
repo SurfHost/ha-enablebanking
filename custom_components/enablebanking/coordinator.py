@@ -29,7 +29,8 @@ Design notes (v0.5.0):
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from dataclasses import asdict
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from homeassistant.components import persistent_notification
@@ -45,22 +46,36 @@ from .const import (
     CONF_APP_ID,
     CONF_ASPSP_NAME,
     CONF_CONSENT_EXPIRES_AT,
+    CONF_FETCH_TRANSACTIONS,
     CONF_JWT,
     CONF_PRIVATE_KEY,
+    CONF_TRANSACTION_HISTORY_DAYS,
     CONSENT_WARNING_DAYS,
+    DEFAULT_FETCH_TRANSACTIONS,
+    DEFAULT_TRANSACTION_HISTORY_DAYS,
     DOMAIN,
+    MAX_REMEMBERED_TRANSACTIONS,
+    MAX_STORED_TRANSACTIONS,
     POLL_HOURS,
+    STATISTIC_SPENDING,
     STORAGE_VERSION,
 )
 from .errors import (
     EnableBankingAPIError,
     EnableBankingAuthenticationError,
     EnableBankingConnectionError,
+    EnableBankingError,
     EnableBankingRateLimitError,
     EnableBankingSessionError,
 )
 from .jwt_helper import jwt_seconds_remaining, mint_jwt
-from .models import AccountBalance, EnableBankingData
+from .models import AccountBalance, EnableBankingData, Transaction, transaction_from_raw
+from .statistics import (
+    async_import_statistics,
+    daily_totals,
+    merge_daily_totals,
+    window_start_for,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -99,6 +114,18 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
         # uid-to-stable_id mapping > so last-known balances survive the upgrade
         # instead of the sensors going unavailable until a fresh poll succeeds.
         self._legacy_by_uid: dict[str, AccountBalance] = {}
+        #: Dedup keys of transactions already turned into events, per account.
+        #: Persisted, so a restart does not refire the whole window.
+        self._seen_transactions: dict[str, set[str]] = {}
+        #: Our own per-day spending/income totals, per account. The statistics
+        #: import computes its running sum from these rather than reading the
+        #: recorder back, which is what makes a repeated import correct itself
+        #: instead of doubling.
+        self._daily_totals: dict[str, dict[str, dict[str, float]]] = {}
+        #: The most recent window of booked transactions per account, newest
+        #: first. Persisted so the list survives a restart without spending a
+        #: poll to rebuild it.
+        self._transactions: dict[str, list[Transaction]] = {}
         self._store: Store[dict[str, Any]] = Store(
             hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.cache"
         )
@@ -200,6 +227,35 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
                 # Pre-0.6.5 entry: keep by uid and adopt on the first poll.
                 self._legacy_by_uid[ab.account_id] = ab
 
+        for stable_id, keys in (stored.get("seen_transactions") or {}).items():
+            if isinstance(stable_id, str) and isinstance(keys, list):
+                self._seen_transactions[stable_id] = {k for k in keys if isinstance(k, str)}
+
+        for stable_id, days in (stored.get("daily_totals") or {}).items():
+            if not isinstance(stable_id, str) or not isinstance(days, dict):
+                continue
+            self._daily_totals[stable_id] = {
+                day: {k: float(v) for k, v in values.items() if isinstance(v, int | float)}
+                for day, values in days.items()
+                if isinstance(day, str) and isinstance(values, dict)
+            }
+
+        for stable_id, raw_list in (stored.get("transactions") or {}).items():
+            if not isinstance(stable_id, str) or not isinstance(raw_list, list):
+                continue
+            restored: list[Transaction] = []
+            for raw in raw_list:
+                if isinstance(raw, dict):
+                    try:
+                        restored.append(Transaction(**raw))
+                    except TypeError:
+                        # A cache written by a different version of the model.
+                        # Dropping it costs one poll to rebuild, which is far
+                        # better than failing setup over a stale file.
+                        _LOGGER.debug("Skipping unreadable cached transaction: %r", raw)
+            if restored:
+                self._transactions[stable_id] = restored
+
         self.last_refresh = _parse_iso(stored.get("last_polled_at"))
 
         if self._cached:
@@ -221,6 +277,19 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
                 "last_polled_at": self.last_refresh.isoformat() if self.last_refresh else None,
                 "accounts": {
                     stable_id: _balance_to_stored(ab) for stable_id, ab in self._cached.items()
+                },
+                # Sorted so the file is stable between saves and diffs cleanly
+                # when someone goes looking in .storage.
+                "seen_transactions": {
+                    stable_id: sorted(keys)
+                    for stable_id, keys in self._seen_transactions.items()
+                    if keys
+                },
+                "daily_totals": self._daily_totals,
+                "transactions": {
+                    stable_id: [asdict(tx) for tx in txs]
+                    for stable_id, txs in self._transactions.items()
+                    if txs
                 },
             }
         )
@@ -337,6 +406,8 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
             for adopted in {ab.account_id for ab in fresh.values() if ab.account_id}:
                 self._legacy_by_uid.pop(adopted, None)
 
+        new_transactions = await self._async_fetch_transactions(fresh, skip_ids)
+
         await self._save_cache()
 
         consent_expires_at = self._parse_consent_expires()
@@ -345,7 +416,144 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
         return EnableBankingData(
             accounts=dict(self._cached),
             consent_expires_at=consent_expires_at,
+            new_transactions=new_transactions,
         )
+
+    # ------------------------------------------------------------------ #
+    # Transactions                                                         #
+    # ------------------------------------------------------------------ #
+
+    @property
+    def transactions_enabled(self) -> bool:
+        """Whether the user opted in to fetching transactions."""
+        return bool(
+            self.config_entry.options.get(CONF_FETCH_TRANSACTIONS, DEFAULT_FETCH_TRANSACTIONS)
+        )
+
+    @property
+    def _history_days(self) -> int:
+        value = self.config_entry.options.get(
+            CONF_TRANSACTION_HISTORY_DAYS, DEFAULT_TRANSACTION_HISTORY_DAYS
+        )
+        return value if isinstance(value, int) and value > 0 else DEFAULT_TRANSACTION_HISTORY_DAYS
+
+    def spend_over(self, stable_id: str, days: int) -> float | None:
+        """Total debits for an account over the last ``days``, today included.
+
+        None when there is nothing recorded for the account, which keeps the
+        sensor unknown rather than asserting a confident zero for an account
+        whose transactions have never been fetched.
+        """
+        totals = self._daily_totals.get(stable_id)
+        if not totals:
+            return None
+        today = dt_util.now().date()
+        cutoff = today - timedelta(days=days - 1)
+        total = 0.0
+        for day, values in totals.items():
+            try:
+                parsed = date.fromisoformat(day)
+            except (ValueError, TypeError):
+                continue
+            if cutoff <= parsed <= today:
+                total += values.get(STATISTIC_SPENDING, 0.0)
+        return round(total, 2)
+
+    def transactions_for(self, stable_id: str) -> list[Transaction]:
+        """The stored window for one account, newest first."""
+        return list(self._transactions.get(stable_id, []))
+
+    async def _async_fetch_transactions(
+        self, accounts: dict[str, AccountBalance], skip_ids: set[str]
+    ) -> dict[str, list[Transaction]]:
+        """Fetch, dedup and file transactions for every account.
+
+        Every failure here is swallowed per account. Balances are the reason
+        this integration exists and transactions are an extra; a bank that
+        rate-limits or 500s on ``/transactions`` must not cost the user their
+        balance sensors, and must not mark the whole poll failed.
+        """
+        if not self.transactions_enabled:
+            return {}
+
+        window_start = window_start_for(self._history_days)
+        new_by_account: dict[str, list[Transaction]] = {}
+
+        for stable_id, account in accounts.items():
+            if stable_id in skip_ids or account.rate_limited_until is not None:
+                _LOGGER.debug(
+                    "Skipping transactions for %s > rate-limit back-off active",
+                    stable_id[:8],
+                )
+                continue
+
+            try:
+                raw = await self.client.async_get_transactions(account.account_id, window_start)
+            except EnableBankingRateLimitError as err:
+                _LOGGER.warning(
+                    "Rate limited fetching transactions for %s; balances are unaffected: %s",
+                    account.name or stable_id[:8],
+                    err,
+                )
+                continue
+            except EnableBankingError as err:
+                _LOGGER.warning(
+                    "Could not fetch transactions for %s; balances are unaffected: %s",
+                    account.name or stable_id[:8],
+                    err,
+                )
+                continue
+
+            parsed = [tx for item in raw if (tx := transaction_from_raw(item)) is not None]
+
+            # The first poll for an account backfills the whole history window.
+            # Those are events only in the sense that they happened; firing
+            # them would replay months of transactions into every automation
+            # the moment the option is switched on. Seed the seen-set silently
+            # and start firing from the next poll.
+            seeding = stable_id not in self._seen_transactions
+            seen = self._seen_transactions.setdefault(stable_id, set())
+            fresh = [tx for tx in parsed if tx.booked and tx.key not in seen]
+            seen.update(tx.key for tx in fresh)
+            if seeding:
+                _LOGGER.debug(
+                    "Seeding %d transaction key(s) for %s without firing events",
+                    len(fresh),
+                    stable_id[:8],
+                )
+                fresh = []
+            if len(seen) > MAX_REMEMBERED_TRANSACTIONS:
+                # Bounded, oldest-arbitrary eviction. The window is what
+                # actually protects against refiring; this only stops the
+                # cache growing without limit on a very busy account.
+                self._seen_transactions[stable_id] = set(list(seen)[-MAX_REMEMBERED_TRANSACTIONS:])
+            if fresh:
+                new_by_account[stable_id] = fresh
+
+            merged = merge_daily_totals(
+                self._daily_totals.get(stable_id, {}),
+                daily_totals(parsed),
+                window_start,
+            )
+            self._daily_totals[stable_id] = merged
+            # Keep the window itself, not just its daily totals. It is already
+            # fetched and would otherwise be discarded, and it is what the
+            # get_transactions service hands back -- HA can backdate statistics
+            # but not states, so a queryable list is the only way to reach the
+            # history that predates the integration being switched on.
+            self._transactions[stable_id] = sorted(
+                (tx for tx in parsed if tx.booked),
+                key=lambda tx: (tx.booking_date or tx.value_date or "", tx.key),
+                reverse=True,
+            )[:MAX_STORED_TRANSACTIONS]
+            try:
+                async_import_statistics(self.hass, account, merged, window_start)
+            except Exception:
+                # A rejected statistic must not lose the transactions we just
+                # parsed, nor the balances alongside them.
+                _LOGGER.exception("Could not import statistics for %s", stable_id[:8])
+
+        return new_by_account
 
     def _cached_snapshot(self) -> EnableBankingData:
         return EnableBankingData(

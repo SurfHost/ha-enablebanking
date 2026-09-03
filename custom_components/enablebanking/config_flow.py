@@ -7,7 +7,13 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
+from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     SelectOptionDict,
@@ -25,11 +31,17 @@ from .const import (
     CONF_ASPSP_NAME,
     CONF_AUTH_CODE,
     CONF_CONSENT_EXPIRES_AT,
+    CONF_FETCH_TRANSACTIONS,
     CONF_JWT,
     CONF_PRIVATE_KEY,
     CONF_PSU_TYPE,
     CONF_SESSION_ID,
+    CONF_TRANSACTION_HISTORY_DAYS,
+    DEFAULT_FETCH_TRANSACTIONS,
+    DEFAULT_TRANSACTION_HISTORY_DAYS,
     DOMAIN,
+    MAX_TRANSACTION_HISTORY_DAYS,
+    MIN_TRANSACTION_HISTORY_DAYS,
     PSU_BUSINESS,
     PSU_PERSONAL,
 )
@@ -301,6 +313,14 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
             },
         )
 
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: ConfigEntry,
+    ) -> EnableBankingOptionsFlow:
+        """Return the options flow."""
+        return EnableBankingOptionsFlow()
+
     # ------------------------------------------------------------------ #
     # Reauth flow                                                          #
     # ------------------------------------------------------------------ #
@@ -454,6 +474,41 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema({vol.Required(CONF_AUTH_CODE): str}),
             description_placeholders={"auth_url": self._auth_url},
             errors=errors,
+        )
+
+
+class EnableBankingOptionsFlow(OptionsFlow):
+    """Settings that change behaviour without re-validating the bank session."""
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Configure transaction fetching."""
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+
+        options = self.config_entry.options
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_FETCH_TRANSACTIONS,
+                        default=options.get(CONF_FETCH_TRANSACTIONS, DEFAULT_FETCH_TRANSACTIONS),
+                    ): bool,
+                    vol.Required(
+                        CONF_TRANSACTION_HISTORY_DAYS,
+                        default=options.get(
+                            CONF_TRANSACTION_HISTORY_DAYS,
+                            DEFAULT_TRANSACTION_HISTORY_DAYS,
+                        ),
+                    ): vol.All(
+                        vol.Coerce(int),
+                        vol.Range(
+                            min=MIN_TRANSACTION_HISTORY_DAYS,
+                            max=MAX_TRANSACTION_HISTORY_DAYS,
+                        ),
+                    ),
+                }
+            ),
         )
 
 

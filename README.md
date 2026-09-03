@@ -21,6 +21,7 @@ The integration uses **Enable Banking** as the licensed TPP (Third Party Provide
 - Graceful 180-day consent expiry: proactive 14-day warning, automatic reauth UI when the consent lapses
 - **Self-renewing API token**: the integration stores your application private key and signs a fresh 23-hour JWT itself, so there is no token to paste and nothing that silently expires
 - Reauth flow that revalidates the existing bank session first, so an expired token is a one-click fix with no bank round-trip
+- **Transactions (opt-in)**: a transaction event entity per account for automations, spending and income as long-term statistics, and rolling spend sensors
 
 ## Requirements
 
@@ -109,6 +110,80 @@ Select ASPSP **Revolut** and account type **Business**. Enable Banking uses a si
 | `stale` | Boolean, true when `last_polled_at` is older than 16 h (twice the 8 h nominal interval; the schedule itself is fixed, see below) |
 | `consent_expires_at` | ISO timestamp when the PSD2 consent expires |
 | `consent_days_remaining` | Integer days until expiry |
+
+## Transactions
+
+Off by default. Turn it on under **Settings > Devices & Services > Enable Banking >
+Configure**, where you can also set how far back to read (90 days by default, which is
+what PSD2 guarantees without a fresh bank login).
+
+It costs one extra API call per account on each of the four daily polls, against the
+same rate limit as balances. If `/transactions` fails or gets rate limited, balances are
+unaffected — they are the reason this integration exists and are never held hostage to
+the extra.
+
+### What you get
+
+**An event entity per account,** `event.<account>_transaction`. It fires once per newly
+booked transaction, which is what makes automations like this a few lines:
+
+```yaml
+triggers:
+  - trigger: state
+    entity_id: event.nl91abna0417164300_transaction
+conditions:
+  - condition: template
+    value_template: >-
+      {{ trigger.to_state.attributes.direction == 'debit'
+         and trigger.to_state.attributes.amount > 200 }}
+actions:
+  - action: notify.mobile_app
+    data:
+      message: >-
+        {{ trigger.to_state.attributes.amount }}
+        {{ trigger.to_state.attributes.currency }}
+        to {{ trigger.to_state.attributes.counterparty }}
+```
+
+Attributes on each event: `amount`, `currency`, `direction` (`debit`/`credit`),
+`counterparty`, `reference`, `booking_date`, `value_date`, `bank_transaction_code`.
+
+Events arrive in batches, when a poll finds entries it has not seen before — Enable
+Banking has no push, so the four daily polls are the resolution available. The first
+poll after switching the option on records the existing history *without* firing, so
+enabling it does not replay three months into your automations.
+
+**Long-term statistics,** `enablebanking:<id>_spending` and `enablebanking:<id>_income`.
+These behave like energy statistics: daily, weekly and monthly bucketing in the
+Statistics card, backfilled across the whole history window on first run, and never
+purged — unlike entity history, which respects `purge_keep_days`. Add a **Statistics**
+card, or find them in **Developer tools > Statistics**.
+
+**The stored history, on request.** Statistics cover spending as totals, but the
+individual transactions behind them are reachable through a service:
+
+```yaml
+action: enablebanking.get_transactions
+data:
+  days: 30
+response_variable: history
+```
+
+It reads the cache from the last poll, so it costs no PSD2 quota and works offline.
+Optionally filter to one account with `account:` (an IBAN, or the name the bank
+reports).
+
+This exists because of a Home Assistant limitation worth knowing about: statistics can
+be backdated, states cannot. So the transactions from before you enabled the option —
+the ones the first poll recorded silently — can never appear in the logbook, and firing
+them retroactively would only stamp them all with today's date and trigger every
+listening automation. The service hands them back with their real dates instead.
+
+**Two sensors per account**, `spend_today` and `spend_30d`, both `device_class:
+monetary` in the account's own currency.
+
+Only *booked* transactions count. Pending entries change or disappear, and a cumulative
+total that counted one cannot be corrected without deleting the statistic.
 
 ## Polling schedule
 

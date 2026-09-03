@@ -59,10 +59,60 @@
       "reauth_successful": "Opnieuw authenticeren gelukt, er is een nieuwe banksessie actief. Je saldi worden bij de volgende ophaalronde bijgewerkt."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Transacties",
+        "description": "Het ophalen van transacties kost per account één extra API-aanroep bij elk van de vier dagelijkse polls en telt mee voor de PSD2-limiet van je bank. Laat dit uit als je alleen saldi wilt.",
+        "data": {
+          "fetch_transactions": "Transacties ophalen",
+          "transaction_history_days": "Dagen geschiedenis"
+        },
+        "data_description": {
+          "fetch_transactions": "Voegt per account een transactie-event-entiteit en uitgavensensoren toe, en legt uitgaven en inkomsten vast als langetermijnstatistieken.",
+          "transaction_history_days": "Hoe ver terug er wordt gevraagd. PSD2 garandeert 90 dagen zonder opnieuw in te loggen bij je bank; meer vragen levert meestal niets extra op."
+        }
+      }
+    }
+  },
   "entity": {
+    "event": {
+      "transaction": {
+        "name": "Transactie",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "transaction": "Transactie"
+            }
+          }
+        }
+      }
+    },
     "sensor": {
       "balance": {
         "name": "Saldo"
+      },
+      "spend_today": {
+        "name": "Vandaag uitgegeven"
+      },
+      "spend_30d": {
+        "name": "Laatste 30 dagen uitgegeven"
+      }
+    }
+  },
+  "services": {
+    "get_transactions": {
+      "name": "Transacties ophalen",
+      "description": "Geeft de opgeslagen transacties van elke geconfigureerde rekening terug, nieuwste eerst. Leest de cache van de laatste poll en kost dus geen PSD2-quota. Geeft responsdata terug.",
+      "fields": {
+        "days": {
+          "name": "Dagen",
+          "description": "Hoe ver terug er wordt teruggegeven, inclusief vandaag."
+        },
+        "account": {
+          "name": "Rekening",
+          "description": "Beperk tot één rekening, op IBAN of op de naam die de bank doorgeeft."
+        }
       }
     }
   }

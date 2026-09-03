@@ -59,10 +59,60 @@
       "reauth_successful": "Re-authentication successful, a new bank session is active. Your balances refresh on the next scheduled poll."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Transactions",
+        "description": "Fetching transactions costs one extra API call per account on each of the four daily polls, and counts against your bank's PSD2 rate limit. Leave this off if you only want balances.",
+        "data": {
+          "fetch_transactions": "Fetch transactions",
+          "transaction_history_days": "Days of history"
+        },
+        "data_description": {
+          "fetch_transactions": "Adds a transaction event entity and spending sensors per account, and records spending and income as long-term statistics.",
+          "transaction_history_days": "How far back to ask for. PSD2 guarantees 90 days without a fresh bank login; asking for more usually returns nothing extra."
+        }
+      }
+    }
+  },
   "entity": {
+    "event": {
+      "transaction": {
+        "name": "Transaction",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "transaction": "Transaction"
+            }
+          }
+        }
+      }
+    },
     "sensor": {
       "balance": {
         "name": "Balance"
+      },
+      "spend_today": {
+        "name": "Spent today"
+      },
+      "spend_30d": {
+        "name": "Spent last 30 days"
+      }
+    }
+  },
+  "services": {
+    "get_transactions": {
+      "name": "Get transactions",
+      "description": "Return the stored transactions for every configured account, newest first. Reads the cache written by the last poll, so it costs no PSD2 quota. Returns response data.",
+      "fields": {
+        "days": {
+          "name": "Days",
+          "description": "How far back to return, counting today."
+        },
+        "account": {
+          "name": "Account",
+          "description": "Limit to one account, by IBAN or by the name the bank reports."
+        }
       }
     }
   }
