@@ -26,9 +26,9 @@
       },
       "auth": {
         "title": "Autoriseer bij je bank",
-        "description": "**[Open deze link om bij je bank te autoriseren]({auth_url})**\n\nNa het inloggen word je doorgestuurd naar enablebanking.com. Kopieer de waarde van `code` uit de URL-balk (die ziet eruit als `?code=abc...`) en plak hem hieronder.",
+        "description": "**[Open deze link om te autoriseren bij je bank]({auth_url})**\n\nNa het inloggen word je doorgestuurd naar een pagina op enablebanking.com. Kopieer het **volledige adres** uit de adresbalk van je browser en plak het hieronder — het ziet eruit als `https://enablebanking.com/?state=...&code=...`. Alleen de waarde van `code` plakken werkt ook.",
         "data": {
-          "auth_code": "Autorisatiecode"
+          "auth_code": "Omleidingsadres (of autorisatiecode)"
         }
       },
       "reauth_jwt": {
@@ -41,9 +41,9 @@
       },
       "reauth_auth": {
         "title": "Autoriseer bij je bank",
-        "description": "**[Open deze link om opnieuw bij je bank te autoriseren]({auth_url})**\n\nPlak de waarde van `code` uit de omleidings-URL hieronder.",
+        "description": "**[Open deze link om opnieuw bij je bank te autoriseren]({auth_url})**\n\nPlak hieronder het volledige omleidingsadres, of alleen de waarde van `code`.",
         "data": {
-          "auth_code": "Autorisatiecode"
+          "auth_code": "Omleidingsadres (of autorisatiecode)"
         }
       }
     },
@@ -52,6 +52,7 @@
       "invalid_auth": "Gegevens afgewezen. Controleer of de privésleutel volledige PEM-inhoud is en bij het ingevoerde applicatie-ID hoort.",
       "invalid_session": "Het sessie-ID is onbekend, ingetrokken of verlopen. Doorloop de bankautorisatie opnieuw.",
       "invalid_auth_code": "De autorisatiecode werd afgewezen. Kopieer de volledige waarde van `code` uit de omleidings-URL.",
+      "no_code_in_url": "Hierin staat geen autorisatiecode. Plak het volledige adres waarnaar je na het inloggen bij je bank bent doorgestuurd — daarin hoort `code=` te staan.",
       "unknown": "Onbekende fout, bekijk het Home Assistant-logboek voor meer informatie."
     },
     "abort": {

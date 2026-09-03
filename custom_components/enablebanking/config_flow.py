@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
@@ -229,20 +230,23 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            auth_code = user_input[CONF_AUTH_CODE].strip()
-            http = async_get_clientsession(self.hass)
-            client = EnableBankingClient.for_config_flow(http, self._jwt)
-            try:
-                session_data = await client.async_create_session(auth_code)
-            except (EnableBankingAuthenticationError, EnableBankingAPIError):
-                errors["base"] = "invalid_auth_code"
-            except EnableBankingConnectionError:
-                errors["base"] = "cannot_connect"
-            except Exception:
-                _LOGGER.exception("Unexpected error creating session")
-                errors["base"] = "unknown"
+            auth_code = _extract_auth_code(user_input[CONF_AUTH_CODE])
+            if auth_code is None:
+                errors["base"] = "no_code_in_url"
             else:
-                return await self._async_finish_session(session_data)
+                http = async_get_clientsession(self.hass)
+                client = EnableBankingClient.for_config_flow(http, self._jwt)
+                try:
+                    session_data = await client.async_create_session(auth_code)
+                except (EnableBankingAuthenticationError, EnableBankingAPIError):
+                    errors["base"] = "invalid_auth_code"
+                except EnableBankingConnectionError:
+                    errors["base"] = "cannot_connect"
+                except Exception:
+                    _LOGGER.exception("Unexpected error creating session")
+                    errors["base"] = "unknown"
+                else:
+                    return await self._async_finish_session(session_data)
 
         return self.async_show_form(
             step_id="auth",
@@ -420,34 +424,37 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            auth_code = user_input[CONF_AUTH_CODE].strip()
-            http = async_get_clientsession(self.hass)
-            client = EnableBankingClient.for_config_flow(http, self._jwt)
-            try:
-                session_data = await client.async_create_session(auth_code)
-            except (EnableBankingAuthenticationError, EnableBankingAPIError):
-                errors["base"] = "invalid_auth_code"
-            except EnableBankingConnectionError:
-                errors["base"] = "cannot_connect"
-            except Exception:
-                _LOGGER.exception("Unexpected error creating session during reauth")
-                errors["base"] = "unknown"
+            auth_code = _extract_auth_code(user_input[CONF_AUTH_CODE])
+            if auth_code is None:
+                errors["base"] = "no_code_in_url"
             else:
-                session_id = session_data.get("session_id") or session_data.get("uid", "")
-                consent_expires_at: str | None = (session_data.get("access") or {}).get(
-                    "valid_until"
-                )
-                reauth_entry = self._get_reauth_entry()
-                return self.async_update_reload_and_abort(
-                    reauth_entry,
-                    data_updates={
-                        CONF_JWT: self._jwt,
-                        CONF_PRIVATE_KEY: self._private_key,
-                        CONF_APP_ID: self._app_id,
-                        CONF_SESSION_ID: session_id,
-                        CONF_CONSENT_EXPIRES_AT: consent_expires_at,
-                    },
-                )
+                http = async_get_clientsession(self.hass)
+                client = EnableBankingClient.for_config_flow(http, self._jwt)
+                try:
+                    session_data = await client.async_create_session(auth_code)
+                except (EnableBankingAuthenticationError, EnableBankingAPIError):
+                    errors["base"] = "invalid_auth_code"
+                except EnableBankingConnectionError:
+                    errors["base"] = "cannot_connect"
+                except Exception:
+                    _LOGGER.exception("Unexpected error creating session during reauth")
+                    errors["base"] = "unknown"
+                else:
+                    session_id = session_data.get("session_id") or session_data.get("uid", "")
+                    consent_expires_at: str | None = (session_data.get("access") or {}).get(
+                        "valid_until"
+                    )
+                    reauth_entry = self._get_reauth_entry()
+                    return self.async_update_reload_and_abort(
+                        reauth_entry,
+                        data_updates={
+                            CONF_JWT: self._jwt,
+                            CONF_PRIVATE_KEY: self._private_key,
+                            CONF_APP_ID: self._app_id,
+                            CONF_SESSION_ID: session_id,
+                            CONF_CONSENT_EXPIRES_AT: consent_expires_at,
+                        },
+                    )
 
         return self.async_show_form(
             step_id="reauth_auth",
@@ -460,6 +467,45 @@ class EnableBankingConfigFlow(ConfigFlow, domain=DOMAIN):
 # ------------------------------------------------------------------ #
 # Helpers                                                             #
 # ------------------------------------------------------------------ #
+
+
+def _extract_auth_code(value: str) -> str | None:
+    """Accept either the redirect URL or a bare authorisation code.
+
+    After authorising at the bank the PSU lands on a URL like
+
+        https://enablebanking.com/?state=<state>&code=<code>
+
+    and the flow needs the ``code``. Asking someone to select exactly that
+    substring out of the address bar — without the ``code=`` prefix, without
+    the ``state`` that precedes it, and without trailing whitespace — is a
+    step that is easy to get wrong and reports itself only as a rejected code
+    one request later. So take the whole URL and pull the parameter out here.
+
+    A bare code is still accepted unchanged, which is what makes this
+    backwards compatible for anyone following the existing instructions.
+    Returns ``None`` when the input looks like a URL but carries no ``code``,
+    so the form can say so rather than posting a URL to the API as if it were
+    a code.
+    """
+    value = value.strip()
+    if not value:
+        return None
+
+    # No URL punctuation at all: treat it as the code the user meant.
+    if "://" not in value and "?" not in value and "#" not in value:
+        return value
+
+    parsed = urlparse(value)
+    # Query first, then fragment: Enable Banking uses the query string, but a
+    # few ASPSPs hand the parameters back in the fragment instead.
+    for part in (parsed.query, parsed.fragment):
+        if not part:
+            continue
+        codes = parse_qs(part).get("code")
+        if codes and codes[0]:
+            return codes[0]
+    return None
 
 
 # ISO 3166-1 alpha-2 > human name for the EU/EEA + UK + CH.

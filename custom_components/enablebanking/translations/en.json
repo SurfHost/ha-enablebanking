@@ -26,9 +26,9 @@
       },
       "auth": {
         "title": "Authorise at your bank",
-        "description": "**[Open this link to authorise at your bank]({auth_url})**\n\nAfter logging in you will be redirected to enablebanking.com. Copy the `code` value from the URL bar (it looks like `?code=abc...`) and paste it below.",
+        "description": "**[Open this link to authorise at your bank]({auth_url})**\n\nAfter logging in you are redirected to a page on enablebanking.com. Copy the **whole address** out of your browser's address bar and paste it below — it looks like `https://enablebanking.com/?state=...&code=...`. Pasting just the `code` value still works if you prefer.",
         "data": {
-          "auth_code": "Authorisation code"
+          "auth_code": "Redirect address (or authorisation code)"
         }
       },
       "reauth_jwt": {
@@ -41,9 +41,9 @@
       },
       "reauth_auth": {
         "title": "Authorise at your bank",
-        "description": "**[Open this link to re-authorise at your bank]({auth_url})**\n\nPaste the `code` value from the redirect URL below.",
+        "description": "**[Open this link to re-authorise at your bank]({auth_url})**\n\nPaste the whole redirect address below, or just the `code` value from it.",
         "data": {
-          "auth_code": "Authorisation code"
+          "auth_code": "Redirect address (or authorisation code)"
         }
       }
     },
@@ -52,6 +52,7 @@
       "invalid_auth": "Credentials rejected. Check that the private key is complete PEM content and that it belongs to the application ID you entered.",
       "invalid_session": "The session ID is unknown, revoked, or expired. Complete the bank authorisation again.",
       "invalid_auth_code": "The authorisation code was rejected. Make sure you copied the full `code` value from the redirect URL.",
+      "no_code_in_url": "That does not contain an authorisation code. Paste the entire address you were redirected to after logging in at your bank — it should contain `code=`.",
       "unknown": "Unexpected error, check the Home Assistant log for details."
     },
     "abort": {

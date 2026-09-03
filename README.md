@@ -74,7 +74,7 @@ The config flow has four steps:
 1. **Credentials** > paste the full contents of your application's private key (.pem) into the multi-line field and enter the application ID. The flow validates them by minting a JWT and fetching the bank list. On a second or later bank both fields come pre-filled from the entry you already have.
 2. **Country** > pick the country the bank is in. This just filters the (long) bank list.
 3. **Bank** > pick a bank from the dropdown (populated live from Enable Banking's ASPSP list) and select *Personal* or *Business*.
-4. **Authorise** > the flow shows a link to your bank's login page. Click it, log in, and you'll be redirected to `enablebanking.com?code=...`. Copy the `code` value from the URL bar and paste it back in HA. The integration exchanges it for a session and creates the balance sensors.
+4. **Authorise** > the flow shows a link to your bank's login page. Click it, log in, and you'll be redirected to `https://enablebanking.com/?state=...&code=...`. Copy the **whole address** out of your browser's address bar and paste it back in HA — the integration pulls the `code` out itself. (Pasting just the `code` value works too.) It then exchanges the code for a session and creates the balance sensors.
 
 Repeat from the top to add more banks.
 
@@ -214,7 +214,8 @@ You do not need to regenerate your application private key unless you revoked it
 | Symptom | Likely cause |
 |---------|-------------|
 | "Credentials rejected" at step 1 | Private key pasted partially (the `-----BEGIN`/`-----END` lines must be included) or the application ID belongs to a different key |
-| "Auth code rejected" at step 4 | Copied the wrong query parameter, use only the `code=` value |
+| "Auth code rejected" at step 4 | The code is single-use and short-lived — re-run the authorisation to get a fresh one |
+| "That does not contain an authorisation code" | The pasted address has no `code=` in it. If it has `error=access_denied`, the consent was declined at the bank — authorise again and approve it |
 | Entry loads but no sensors appear | The consent granted no accounts. The log says so at WARNING level; check in the Enable Banking dashboard that the account is linked and the app's Account Information service is not restricted |
 | Sensor shows `unavailable` | Consent expired or bank revoked access, use Reconfigure |
 | Balance stuck / not updating | Check HA log at `logger: custom_components.enablebanking: debug` |
