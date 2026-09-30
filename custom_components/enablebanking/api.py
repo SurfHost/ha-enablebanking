@@ -14,6 +14,7 @@ Endpoints implemented:
     POST /sessions                        -> exchange auth code for session_id
     GET  /sessions/{session_id}           -> account list and session status
     GET  /accounts/{account_id}/balances  -> balance objects for one account
+    GET  /accounts/{account_id}/transactions -> paged transaction history
 
 See https://enablebanking.com/docs/api/reference/ for the full surface.
 """
@@ -23,7 +24,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import aiohttp
@@ -39,6 +40,11 @@ from .errors import (
 from .models import AccountBalance
 
 _LOGGER = logging.getLogger(__name__)
+
+#: Upper bound on continuation-key pages per account per poll. 90 days of a
+#: busy current account is comfortably under this; the cap exists so a server
+#: that keeps handing back a key cannot spin the poll forever.
+MAX_TRANSACTION_PAGES: int = 20
 
 _BALANCE_TYPE_PREFERENCE: tuple[str, ...] = (
     "CLBD",  # closing booked
@@ -262,6 +268,52 @@ class EnableBankingClient:
         if not isinstance(balances, list):
             return []
         return balances
+
+    async def async_get_transactions(
+        self,
+        account_id: str,
+        date_from: date,
+        max_pages: int = MAX_TRANSACTION_PAGES,
+    ) -> list[dict[str, Any]]:
+        """Return raw transaction objects for one account since ``date_from``.
+
+        Enable Banking pages with an opaque ``continuation_key``: a response
+        carrying one has more behind it. The loop is bounded by ``max_pages``
+        rather than trusting the server to stop, because a key that never
+        clears would otherwise spin inside a single coordinator poll, holding
+        the update lock and spending rate-limit budget until the account is
+        locked out for the day.
+
+        Raises the same exceptions as every other call here, including
+        ``EnableBankingRateLimitError`` on a 429 so the coordinator can apply
+        its per-account back-off.
+        """
+        params: dict[str, str] = {"date_from": date_from.isoformat()}
+        transactions: list[dict[str, Any]] = []
+
+        for page in range(max_pages):
+            data = await self._request("GET", f"/accounts/{account_id}/transactions", params=params)
+            if not isinstance(data, dict):
+                raise EnableBankingAPIError(
+                    f"Unexpected transactions payload type: {type(data).__name__}"
+                )
+            batch = data.get("transactions")
+            if isinstance(batch, list):
+                transactions.extend(item for item in batch if isinstance(item, dict))
+
+            continuation_key = data.get("continuation_key")
+            if not isinstance(continuation_key, str) or not continuation_key:
+                break
+            params["continuation_key"] = continuation_key
+            if page == max_pages - 1:
+                _LOGGER.warning(
+                    "Stopped paging transactions for %s after %d pages with a "
+                    "continuation key still set; some history is missing",
+                    account_id[:8],
+                    max_pages,
+                )
+
+        return transactions
 
     async def async_get_account_details(self, account_id: str) -> dict[str, Any]:
         """Return the account-details object for a single account.

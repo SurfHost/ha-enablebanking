@@ -5,3 +5,33 @@ refresh:
     the fixed 10:00/14:00/18:00/22:00 schedule. Useful for debugging a freshly
     added bank. Still counts against the bank's PSD2 rate limit (typically 4
     polls per day per account).
+
+get_transactions:
+  name: Get transactions
+  description: >-
+    Return the stored transactions for every configured account, newest first.
+    Reads the cache written by the last poll, so it costs no PSD2 quota and
+    works offline. Requires transactions to be enabled in the integration's
+    options. Returns response data - call it with response_variable.
+  fields:
+    days:
+      name: Days
+      description: How far back to return, counting today.
+      required: false
+      example: 30
+      default: 90
+      selector:
+        number:
+          min: 1
+          max: 365
+          unit_of_measurement: days
+          mode: box
+    account:
+      name: Account
+      description: >-
+        Limit to one account, by IBAN or by the name the bank reports. Omit for
+        every account across every configured bank.
+      required: false
+      example: NL91ABNA0417164300
+      selector:
+        text:

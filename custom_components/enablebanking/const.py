@@ -52,3 +52,36 @@ PSU_PERSONAL: Final = "personal"
 PSU_BUSINESS: Final = "business"
 
 CONSENT_WARNING_DAYS: Final = 14
+
+# --- Transactions (opt-in) ------------------------------------------------ #
+
+#: Options-flow keys. Transactions are off by default: fetching them costs one
+#: extra API call per account per poll against the PSD2 4/day cap, and nobody
+#: should start spending that budget — or recorder space — without asking.
+CONF_FETCH_TRANSACTIONS: Final = "fetch_transactions"
+CONF_TRANSACTION_HISTORY_DAYS: Final = "transaction_history_days"
+
+DEFAULT_FETCH_TRANSACTIONS: Final = False
+
+#: How far back to ask for on the first poll. 90 days is what PSD2 guarantees
+#: without a fresh SCA; asking for more generally returns nothing extra.
+DEFAULT_TRANSACTION_HISTORY_DAYS: Final = 90
+MIN_TRANSACTION_HISTORY_DAYS: Final = 1
+MAX_TRANSACTION_HISTORY_DAYS: Final = 365
+
+#: Event entity type fired for each newly-seen booked transaction.
+EVENT_TYPE_TRANSACTION: Final = "transaction"
+
+#: Suffixes for the two external statistic series kept per account.
+STATISTIC_SPENDING: Final = "spending"
+STATISTIC_INCOME: Final = "income"
+
+#: Cap on remembered dedup keys per account in the on-disk cache. Bounds the
+#: cache file on a busy account; well above the number of transactions a
+#: 90-day window can hold, so it never truncates a live window in practice.
+MAX_REMEMBERED_TRANSACTIONS: Final = 2000
+
+#: Transactions retained per account for the get_transactions service. Bounds
+#: the cache file; comfortably more than a 90-day window holds for a normal
+#: account, so it only bites on a very busy one.
+MAX_STORED_TRANSACTIONS: Final = 1000
