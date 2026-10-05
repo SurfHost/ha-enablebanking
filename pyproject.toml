@@ -23,7 +23,12 @@ dev = [
     "pylint",
     "pytest",
     "pytest-asyncio",
-    "pytest-homeassistant-custom-component",
+    # Pinned, not floating: this package pins an exact homeassistant build in
+    # turn, so an unpinned floor means the test job silently changes which
+    # Home Assistant it runs against — including onto a beta, which is what
+    # resolving "latest" picks up today. 0.13.357 is Home Assistant 2026.8.3,
+    # the newest stable at time of writing. Bump it deliberately.
+    "pytest-homeassistant-custom-component==0.13.357",
     "ruff",
     "codespell",
 ]
@@ -35,6 +40,17 @@ build-backend = "hatchling.build"
 [tool.uv]
 # HA custom component > nothing to build/install as a wheel
 package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# asyncio_mode=auto so async tests need no per-test decorator, matching how
+# Home Assistant core's own suite is written.
+asyncio_mode = "auto"
+# The component is imported as `custom_components.enablebanking`, which only
+# resolves if the repository root is on sys.path. `package = false` above means
+# nothing is installed to make that happen, and tests/ is deliberately not a
+# package, so state it here rather than relying on rootdir insertion.
+pythonpath = ["."]
 
 [tool.ruff]
 # Deliberately behind requires-python: at py314 the formatter rewrites every
