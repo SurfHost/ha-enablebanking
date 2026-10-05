@@ -21,6 +21,7 @@ See https://enablebanking.com/docs/api/reference/ for the full surface.
 from __future__ import annotations
 
 import hashlib
+import json as json_lib
 import logging
 import secrets
 from datetime import UTC, datetime, timedelta
@@ -39,6 +40,13 @@ from .errors import (
 from .models import AccountBalance
 
 _LOGGER = logging.getLogger(__name__)
+
+#: How deep ``_describe_payload`` walks before collapsing a branch. Three levels
+#: reaches the keys of an ``accounts_data`` element, which is what tells the
+#: ASPSP payload variants apart (``accounts`` holding bare uid strings versus
+#: full dicts, the IBAN under ``account_id`` versus top level). Keys are field
+#: names, so depth costs structure detail but never personal data.
+_MAX_SHAPE_DEPTH: int = 3
 
 _BALANCE_TYPE_PREFERENCE: tuple[str, ...] = (
     "CLBD",  # closing booked
@@ -123,13 +131,15 @@ class EnableBankingClient:
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as response:
                 text = await response.text()
-                _LOGGER.debug(
-                    "Enable Banking response: HTTP %s for %s %s > body: %s",
-                    response.status,
-                    method,
-                    url,
-                    text[:3000],
-                )
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug(
+                        "Enable Banking response: HTTP %s for %s %s > %d bytes, shape: %s",
+                        response.status,
+                        method,
+                        url,
+                        len(text),
+                        _describe_payload(text),
+                    )
                 if response.status in (401, 403):
                     # An expired/revoked consent also surfaces as 401, but with
                     # an EXPIRED_SESSION body > that's a session problem, not a
@@ -147,7 +157,7 @@ class EnableBankingClient:
                         f"Enable Banking rejected the JWT (HTTP {response.status}): {text[:200]}"
                     )
                 if response.status == 404:
-                    raise EnableBankingSessionError(f"Session not found or expired: {text}")
+                    raise EnableBankingSessionError(f"Session not found or expired: {text[:200]}")
                 if response.status == 429:
                     raise EnableBankingRateLimitError(
                         f"PSD2 rate limit exceeded at ASPSP: {text[:200]}"
@@ -447,10 +457,11 @@ class EnableBankingClient:
             picked = _pick_preferred_balance(balances)
             if picked is None:
                 _LOGGER.warning(
-                    "No usable balance for %s (%s); raw balances=%r",
+                    "No usable balance for %s (%s); balance shape=%s, types=%s",
                     name,
                     uid,
-                    balances,
+                    _describe_json(balances),
+                    [b.get("balance_type") for b in balances if isinstance(b, dict)],
                 )
                 continue
 
@@ -465,7 +476,14 @@ class EnableBankingClient:
                 except (TypeError, ValueError):
                     amount = None
             if amount is None:
-                _LOGGER.warning("Could not parse amount for %s; picked=%r", uid, picked)
+                # The amount itself is the balance, so log the shape it arrived
+                # in and the type that failed to parse, never the value.
+                _LOGGER.warning(
+                    "Could not parse amount for %s; picked shape=%s, amount type=%s",
+                    uid,
+                    _describe_json(picked),
+                    type(amount_obj.get("amount")).__name__,
+                )
                 continue
 
             out[stable_id] = AccountBalance(
@@ -486,6 +504,49 @@ class EnableBankingClient:
             len(rate_limited),
         )
         return out, rate_limited
+
+
+def _describe_payload(text: str) -> str:
+    """Summarise a response body by its *shape*, never its values.
+
+    These debug lines used to carry up to 3000 characters of raw body. For this
+    API that means IBANs, balances and account-holder names written to
+    ``home-assistant.log`` — the file users are asked to attach to bug reports,
+    and which the README's troubleshooting section tells them to fill by
+    enabling ``custom_components.enablebanking: debug``.
+
+    What the lines are actually used for is telling ASPSP payload variants
+    apart, and that is a property of the structure, not the contents. So we log
+    keys and value *types* and drop every leaf value.
+    """
+    try:
+        return _describe_json(json_lib.loads(text))
+    except (ValueError, TypeError):
+        return "<non-JSON body>"
+
+
+def _describe_json(value: Any, depth: int = 0) -> str:
+    """Render one JSON value as a type sketch, recursing to ``_MAX_SHAPE_DEPTH``."""
+    if isinstance(value, dict):
+        if not value:
+            return "{}"
+        if depth >= _MAX_SHAPE_DEPTH:
+            return f"{{…{len(value)} keys}}"
+        inner = ", ".join(
+            f"{key}: {_describe_json(val, depth + 1)}" for key, val in sorted(value.items())
+        )
+        return f"{{{inner}}}"
+    if isinstance(value, list):
+        if not value:
+            return "[]"
+        if depth >= _MAX_SHAPE_DEPTH:
+            return f"[…{len(value)} items]"
+        # Lists here are homogeneous (accounts, balances, transactions), so the
+        # first element stands in for the rest.
+        return f"[{_describe_json(value[0], depth + 1)} x {len(value)}]"
+    if value is None:
+        return "null"
+    return type(value).__name__
 
 
 def _collect_accounts(
