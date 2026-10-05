@@ -14,7 +14,6 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import CURRENCY_EURO
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -22,7 +21,7 @@ from homeassistant.helpers.typing import StateType
 from homeassistant.util import slugify
 from homeassistant.util.dt import utcnow
 
-from .const import CONF_ASPSP_NAME, DEFAULT_SCAN_INTERVAL, DOMAIN
+from .const import CONF_ASPSP_NAME, DEFAULT_CURRENCY, DEFAULT_SCAN_INTERVAL, DOMAIN
 from .coordinator import EnableBankingConfigEntry, EnableBankingCoordinator
 from .entity import EnableBankingEntity, account_unique_id
 from .models import AccountBalance
@@ -41,7 +40,9 @@ class EnableBankingSensorDescription(SensorEntityDescription):
 BALANCE_SENSOR = EnableBankingSensorDescription(
     key="balance",
     translation_key="balance",
-    native_unit_of_measurement=CURRENCY_EURO,
+    # Fallback only, for the window before any account has resolved. The real
+    # unit is per-account and comes from the property override on the entity.
+    native_unit_of_measurement=DEFAULT_CURRENCY,
     device_class=SensorDeviceClass.MONETARY,
     state_class=SensorStateClass.TOTAL,
     suggested_display_precision=2,
@@ -243,6 +244,24 @@ class EnableBankingBalanceSensor(EnableBankingEntity, SensorEntity):
         # blip or a rate-limit response. We want exactly the opposite:
         # show the last known value with a `stale` attribute if need be.
         return self._current_account is not None
+
+    @property
+    def native_unit_of_measurement(self) -> str | None:
+        """The account's own currency.
+
+        Home Assistant documents `SensorDeviceClass.MONETARY` as taking an
+        ISO 4217 code, so that is what this returns. The description's value is
+        only a fallback for the window before any account has resolved.
+
+        Previously the unit was hardcoded to the euro sign, which was wrong
+        twice over: a SEK, GBP or CHF balance was rendered with a euro symbol
+        in front of a number that is not euros, and even a euro account was
+        carrying a symbol where the spec asks for a code.
+        """
+        account = self._current_account
+        if account is None or not account.currency:
+            return self.entity_description.native_unit_of_measurement
+        return account.currency.upper()
 
     @property
     def native_value(self) -> StateType:

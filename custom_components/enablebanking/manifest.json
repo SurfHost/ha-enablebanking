@@ -1,9 +1,14 @@
 {
   "domain": "enablebanking",
   "name": "Enable Banking",
-  "codeowners": ["@SurfHost"],
+  "codeowners": [
+    "@SurfHost"
+  ],
   "config_flow": true,
   "dependencies": [],
+  "after_dependencies": [
+    "recorder"
+  ],
   "documentation": "https://github.com/SurfHost/ha-enablebanking",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/SurfHost/ha-enablebanking/issues",

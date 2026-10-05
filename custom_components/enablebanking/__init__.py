@@ -5,15 +5,25 @@ from __future__ import annotations
 import logging
 import random
 from datetime import datetime
+from functools import partial
+from typing import Any
 
+from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder.statistics import (
+    async_update_statistics_metadata,
+    get_metadata,
+)
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.storage import Store
 
 from .api import EnableBankingClient
-from .const import CONF_JWT, CONF_SESSION_ID, DOMAIN, STARTUP_JITTER_SECONDS
+from .const import CONF_JWT, CONF_SESSION_ID, DOMAIN, STARTUP_JITTER_SECONDS, STORAGE_VERSION
 from .coordinator import EnableBankingConfigEntry, EnableBankingCoordinator
+from .entity import account_unique_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -104,3 +114,86 @@ async def async_setup_entry(hass: HomeAssistant, entry: EnableBankingConfigEntry
 
 async def async_unload_entry(hass: HomeAssistant, entry: EnableBankingConfigEntry) -> bool:
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: EnableBankingConfigEntry) -> bool:
+    """Migrate an entry to the current version.
+
+    v1 -> v2: balance sensors reported the euro *symbol* as their unit. Home
+    Assistant documents `SensorDeviceClass.MONETARY` as taking an ISO 4217
+    code, so they now report one. Changing a sensor's unit is normally what
+    parks its long-term statistics behind a repair the user has to resolve by
+    hand, so the existing statistics metadata is rewritten here instead.
+    """
+    if entry.version < 2:
+        await _async_migrate_statistic_units(hass, entry)
+        hass.config_entries.async_update_entry(entry, version=2)
+    return True
+
+
+async def _async_migrate_statistic_units(
+    hass: HomeAssistant, entry: EnableBankingConfigEntry
+) -> None:
+    """Point each balance sensor's statistics at its account's ISO currency.
+
+    Best effort throughout. A migration that cannot find the recorder, the
+    cache or an entity has nothing to fix; failing setup over it would be a
+    far worse outcome than a unit the user corrects once themselves.
+    """
+    if "recorder" not in hass.config.components:
+        return
+
+    stored = await Store[dict[str, Any]](
+        hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.cache"
+    ).async_load()
+    accounts = (stored or {}).get("accounts") or {}
+    if not accounts:
+        return
+
+    registry = er.async_get(hass)
+    # stable_id is not the entity_id: resolve through the unique_id scheme the
+    # sensor platform actually registers under.
+    wanted: dict[str, str] = {}
+    for stable_id, raw in accounts.items():
+        if not isinstance(raw, dict):
+            continue
+        entity_id = registry.async_get_entity_id(
+            "sensor", DOMAIN, account_unique_id(entry.entry_id, stable_id, "balance")
+        )
+        currency = raw.get("currency")
+        if entity_id and isinstance(currency, str) and currency:
+            wanted[entity_id] = currency.upper()
+
+    if not wanted:
+        return
+
+    try:
+        recorder = get_instance(hass)
+        metadata = await recorder.async_add_executor_job(
+            partial(get_metadata, hass, statistic_ids=set(wanted))
+        )
+    except Exception:
+        _LOGGER.exception("Could not read statistics metadata; leaving units alone")
+        return
+
+    for statistic_id, target in wanted.items():
+        entry_meta = metadata.get(statistic_id)
+        if entry_meta is None:
+            continue
+        current = entry_meta[1].get("unit_of_measurement")
+        if current == target:
+            continue
+        _LOGGER.info(
+            "Enable Banking: migrating statistics unit for %s from %s to %s",
+            statistic_id,
+            current,
+            target,
+        )
+        async_update_statistics_metadata(
+            hass,
+            statistic_id,
+            new_unit_of_measurement=target,
+            # Monetary values have no conversion class; passing it explicitly
+            # avoids the deprecation report for omitting it.
+            new_unit_class=None,
+        )
