@@ -223,6 +223,21 @@ You do not need to regenerate your application private key unless you revoked it
 | No **Reconfigure** in the **⋮** menu | You are on 0.6.12 or older; renewing before expiry needs 0.6.13 or later |
 | Balance stuck / not updating | Check HA log at `logger: custom_components.enablebanking: debug` |
 
+## Development
+
+```bash
+uv sync --extra dev
+uv run pytest          # the test suite
+uv run ruff check .    # lint
+uv run ruff format .   # format
+uv run mypy            # types (scoped to custom_components/enablebanking)
+```
+
+CI runs all four on every push, plus hassfest and the HACS validator. The tests
+need no network and no Enable Banking account — every API call is mocked, and
+the RSA key the JWT tests sign with is generated in-process rather than
+committed.
+
 ## License
 
 MIT
