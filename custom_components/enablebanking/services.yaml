@@ -5,3 +5,60 @@ refresh:
     the fixed 10:00/14:00/18:00/22:00 schedule. Useful for debugging a freshly
     added bank. Still counts against the bank's PSD2 rate limit (typically 4
     polls per day per account).
+
+get_transactions:
+  name: Get transactions
+  description: >-
+    Fetch the transactions of one account for a date range and return them as a
+    response (use response_variable in a script or automation). Amounts are
+    signed: negative for money going out. Each call counts against the bank's
+    PSD2 rate limit for transactions (typically 4 calls per day per account).
+  fields:
+    entity_id:
+      name: Account
+      description: The Enable Banking balance sensor of the account.
+      required: true
+      selector:
+        entity:
+          integration: enablebanking
+          domain: sensor
+    date_from:
+      name: From date
+      description: >-
+        First date to include. Cannot be in the future. Defaults to 30 days ago.
+      required: false
+      selector:
+        date:
+    date_to:
+      name: To date
+      description: >-
+        Last date to include. May be in the future, to ask for scheduled
+        payments if your bank reports them. Defaults to the bank's own limit
+        (usually today).
+      required: false
+      selector:
+        date:
+    status:
+      name: Status
+      description: >-
+        Only return transactions with this status. Leave empty for all. Not
+        every bank supports this filter.
+      required: false
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - label: Booked
+              value: BOOK
+            - label: Pending
+              value: PDNG
+            - label: Scheduled
+              value: SCHD
+            - label: On hold
+              value: HOLD
+            - label: Cancelled
+              value: CNCL
+            - label: Rejected
+              value: RJCT
+            - label: Other
+              value: OTHR

@@ -241,7 +241,7 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
     # Refresh                                                              #
     # ------------------------------------------------------------------ #
 
-    async def _async_maybe_renew_jwt(self) -> None:
+    async def async_renew_jwt_if_needed(self) -> None:
         """Silently regenerate the JWT if it expires within 30 minutes.
 
         Only runs when a private key is stored in the config entry (new-style
@@ -276,7 +276,7 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
 
     async def _async_update_data(self) -> EnableBankingData:
         """Fetch balances. NEVER raises > always returns cached data on error."""
-        await self._async_maybe_renew_jwt()
+        await self.async_renew_jwt_if_needed()
         now = dt_util.utcnow()
         skip_ids = {
             stable_id

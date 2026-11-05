@@ -41,7 +41,7 @@ class EnableBankingSensorDescription(SensorEntityDescription):
 BALANCE_SENSOR = EnableBankingSensorDescription(
     key="balance",
     translation_key="balance",
-    native_unit_of_measurement=CURRENCY_EURO,
+    # No fixed unit: EnableBankingBalanceSensor reports the account currency.
     device_class=SensorDeviceClass.MONETARY,
     state_class=SensorStateClass.TOTAL,
     suggested_display_precision=2,
@@ -243,6 +243,20 @@ class EnableBankingBalanceSensor(EnableBankingEntity, SensorEntity):
         # blip or a rate-limit response. We want exactly the opposite:
         # show the last known value with a `stale` attribute if need be.
         return self._current_account is not None
+
+    @property
+    def native_unit_of_measurement(self) -> str | None:
+        """The account's own currency (issue #3: NOK and SEK showed as EUR).
+
+        Euro stays the "€" symbol earlier versions used for every account, so
+        existing euro sensors keep their unit and long-term statistics. Other
+        currencies use the ISO 4217 code, which the monetary device class takes.
+        """
+        account = self._current_account
+        currency = account.currency.upper() if account is not None else ""
+        if not currency or currency == "EUR":
+            return CURRENCY_EURO
+        return currency
 
     @property
     def native_value(self) -> StateType:

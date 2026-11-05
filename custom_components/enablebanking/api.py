@@ -14,6 +14,8 @@ Endpoints implemented:
     POST /sessions                        -> exchange auth code for session_id
     GET  /sessions/{session_id}           -> account list and session status
     GET  /accounts/{account_id}/balances  -> balance objects for one account
+    GET  /accounts/{account_id}/details   -> IBAN, name, product, currency
+    GET  /accounts/{account_id}/transactions -> transactions (on demand only)
 
 See https://enablebanking.com/docs/api/reference/ for the full surface.
 """
@@ -23,7 +25,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import aiohttp
@@ -40,9 +42,15 @@ from .models import AccountBalance
 
 _LOGGER = logging.getLogger(__name__)
 
+# Safety cap on continuation pages for one on-demand transactions call.
+_MAX_TRANSACTION_PAGES = 20
+
+# Interim available first: it is updated during the day, while closing booked
+# only moves once the bank closes the day, so it lags by up to a day. Banks that
+# do not report ITAV fall back to closing booked (issue #12).
 _BALANCE_TYPE_PREFERENCE: tuple[str, ...] = (
-    "CLBD",  # closing booked
     "ITAV",  # interim available
+    "CLBD",  # closing booked
     "XPCD",  # expected
     "ITBD",  # interim booked
     "OPBD",  # opening booked
@@ -280,6 +288,48 @@ class EnableBankingClient:
             )
         return data
 
+    async def async_get_transactions(
+        self,
+        account_id: str,
+        date_from: date,
+        date_to: date | None = None,
+        transaction_status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return all transactions for one account in a date range.
+
+        Follows ``continuation_key`` until the bank has no more pages (capped at
+        ``_MAX_TRANSACTION_PAGES``). ``date_from`` may not be in the future;
+        ``date_to`` may, which is how scheduled payments are requested from
+        banks that report them.
+        """
+        params: dict[str, str] = {"date_from": date_from.isoformat()}
+        if date_to is not None:
+            params["date_to"] = date_to.isoformat()
+        if transaction_status:
+            params["transaction_status"] = transaction_status
+
+        out: list[dict[str, Any]] = []
+        for _ in range(_MAX_TRANSACTION_PAGES):
+            data = await self._request("GET", f"/accounts/{account_id}/transactions", params=params)
+            if not isinstance(data, dict):
+                raise EnableBankingAPIError(
+                    f"Unexpected transactions payload type: {type(data).__name__}"
+                )
+            page = data.get("transactions")
+            if isinstance(page, list):
+                out.extend(t for t in page if isinstance(t, dict))
+            next_key = data.get("continuation_key")
+            if not isinstance(next_key, str) or not next_key:
+                break
+            params = {**params, "continuation_key": next_key}
+        else:
+            _LOGGER.warning(
+                "Stopped after %d transaction pages for %s; narrow the date range",
+                _MAX_TRANSACTION_PAGES,
+                account_id[:8],
+            )
+        return out
+
     async def async_get_all_balances(
         self,
         fallback: dict[str, AccountBalance] | None = None,
@@ -374,6 +424,7 @@ class EnableBankingClient:
             product = meta.get("product") if isinstance(meta.get("product"), str) else None
             if not product and prev and prev.product:
                 product = prev.product
+            currency = _account_currency(meta) or (prev.currency if prev else "")
 
             if not iban and fetch_details:
                 # Separate per-account rate-limit budget from /balances, and the
@@ -398,6 +449,7 @@ class EnableBankingClient:
                     detail_product = details.get("product")
                     if not product and isinstance(detail_product, str):
                         product = detail_product
+                    currency = currency or _account_currency(details)
 
             # Name must never depend on the session uid (it churns on reauth);
             # fall back to a stable short token derived from stable_id.
@@ -474,7 +526,9 @@ class EnableBankingClient:
                 iban=iban,
                 name=str(name),
                 product=product,
-                currency=str(amount_obj.get("currency", "EUR")),
+                # The balance's own currency wins; the account currency covers
+                # banks that leave it out. EUR only as a last resort (issue #3).
+                currency=_currency_code(amount_obj.get("currency")) or currency or "EUR",
                 balance=amount,
                 balance_type=picked.get("balance_type"),
                 reference_date=picked.get("reference_date"),
@@ -592,6 +646,18 @@ def _account_iban(meta: dict[str, Any]) -> str:
                         if isinstance(val, str) and val:
                             return val
     return ""
+
+
+def _currency_code(value: Any) -> str:
+    """Return a clean upper-case ISO 4217 code, or "" if ``value`` is not one."""
+    if isinstance(value, str) and len(value.strip()) == 3 and value.strip().isalpha():
+        return value.strip().upper()
+    return ""
+
+
+def _account_currency(meta: dict[str, Any]) -> str:
+    """Account currency from session metadata or the details payload."""
+    return _currency_code(meta.get("currency"))
 
 
 def _account_display_name(meta: dict[str, Any]) -> str:

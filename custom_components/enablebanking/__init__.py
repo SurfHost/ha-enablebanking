@@ -14,6 +14,7 @@ from homeassistant.helpers.event import async_call_later
 from .api import EnableBankingClient
 from .const import CONF_JWT, CONF_SESSION_ID, DOMAIN, STARTUP_JITTER_SECONDS
 from .coordinator import EnableBankingConfigEntry, EnableBankingCoordinator
+from .services import register_transaction_service
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ def _register_services(hass: HomeAssistant) -> None:
             await coordinator.async_refresh()
 
     hass.services.async_register(DOMAIN, SERVICE_REFRESH, _handle_refresh)
+    register_transaction_service(hass)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: EnableBankingConfigEntry) -> bool:

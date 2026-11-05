@@ -3,6 +3,15 @@
 Releases up to and including 0.6.11 are described in the
 [GitHub release notes](https://github.com/SurfHost/ha-enablebanking/releases).
 
+## [0.7.0] - 2026-11-05
+
+### Added
+- **`enablebanking.get_transactions` action** ([#2](https://github.com/SurfHost/ha-enablebanking/issues/2)). Fetches one account's transactions for a date range and returns them as an action response, with signed amounts (negative for money going out), a `total`, and the bank's raw payload per transaction. `date_to` may be in the future to ask for scheduled payments; whether the bank returns them is up to the bank. It only runs when called, and each call spends the account's PSD2 quota for transactions.
+
+### Fixed
+- **Non-euro accounts showed `€`** ([#3](https://github.com/SurfHost/ha-enablebanking/issues/3)). The unit was hard-coded to euro, so NOK and SEK balances were labelled as euros. The unit now follows the account currency. Euro accounts keep `€`, so their unit and long-term statistics do not change; other currencies use the ISO code. Home Assistant may ask once to update the unit of the long-term statistics for a NOK or SEK sensor (**Developer tools > Statistics**). The `currency` attribute also no longer falls back to EUR when the balance leaves the currency out but the account details have it.
+- **Balance lagged a day behind** ([#12](https://github.com/SurfHost/ha-enablebanking/issues/12)). The integration preferred closing booked (`CLBD`), which only moves when the bank closes the day. It now prefers interim available (`ITAV`), which is updated during the day, and falls back to `CLBD` for banks that do not report it. Check the `balance_type` attribute to see which one your bank delivers. For some banks the available balance includes an overdraft or credit limit.
+
 ## [0.6.13] - 2026-10-11
 
 ### Fixed

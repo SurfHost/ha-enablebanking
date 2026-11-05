@@ -14,7 +14,8 @@ The integration uses **Enable Banking** as the licensed TPP (Third Party Provide
 - One config entry per bank > add ASN Bank, N26, Revolut, Openbank independently
 - Balance sensor per discovered account under each entry
 - Revolut Business supported: select ASPSP "Revolut" with account type "Business"
-- EUR (and other currencies) with `state_class: total`, `device_class: monetary`
+- Unit follows the account currency (EUR shows as `€`, others as their ISO code such as `NOK` or `SEK`), with `state_class: total`, `device_class: monetary`
+- `enablebanking.get_transactions` action: fetch an account's transactions for a date range on demand
 - Attributes per sensor: IBAN, account name, product, currency, balance type, reference date, bank name, `last_polled_at`, `last_error`, `stale`, `consent_expires_at`, `consent_days_remaining`
 - Scheduled polling at fixed local times (10:00, 14:00, 18:00, 22:00) with per-entry minute jitter > exactly four polls/day, aligned with PSD2's cap
 - **Never-unavailable sensors**: balances are cached to disk and displayed even during rate-limits, network blips, consent expiry, or the first moment after an HA restart before the first poll runs
@@ -88,8 +89,8 @@ Select ASPSP **Revolut** and account type **Business**. Enable Banking uses a si
 
 | Property | Value |
 |----------|-------|
-| State | EUR balance (closing booked preferred, falls back to interim available) |
-| Unit | Account currency |
+| State | Balance (interim available `ITAV` preferred, falls back to closing booked `CLBD`, then `XPCD`, `ITBD`, `OPBD`) |
+| Unit | Account currency: `€` for euro accounts, otherwise the ISO code (`NOK`, `SEK`, `GBP`, ...) |
 | State class | `total` |
 | Device class | `monetary` |
 
@@ -131,6 +132,43 @@ action: enablebanking.refresh
 ```
 
 It is meant for debugging a freshly added bank. Each call spends real PSD2 quota, so use it sparingly.
+
+### Fetching transactions
+
+`enablebanking.get_transactions` returns the transactions of one account as an action response. It does not create entities and never runs on its own, so it costs nothing until you call it.
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `entity_id` | yes | The account's balance sensor |
+| `date_from` | no | Defaults to 30 days ago. Cannot be in the future (Enable Banking rejects it) |
+| `date_to` | no | May be in the future to ask for scheduled payments, if your bank reports them |
+| `status` | no | `BOOK`, `PDNG`, `SCHD`, `HOLD`, `CNCL`, `RJCT` or `OTHR`; not every bank supports the filter |
+
+The response has `count`, `total` (sum of all amounts) and a `transactions` list. Each transaction has `date`, `booking_date`, `value_date`, `amount` (negative for money going out), `currency`, `status`, `counterparty`, `description` and the bank's untouched payload under `raw`.
+
+Example: check every month whether the scheduled payments of the next 30 days are covered by the balance.
+
+```yaml
+actions:
+  - action: enablebanking.get_transactions
+    data:
+      entity_id: sensor.no3812345678901
+      date_from: "{{ now().date() }}"
+      date_to: "{{ (now() + timedelta(days=30)).date() }}"
+    response_variable: tx
+  - variables:
+      outgoing: >-
+        {{ tx.transactions | selectattr('amount', 'number')
+           | selectattr('amount', 'lt', 0)
+           | map(attribute='amount') | sum | abs }}
+  - if: "{{ outgoing > states('sensor.no3812345678901') | float(0) }}"
+    then:
+      - action: notify.notify
+        data:
+          message: "Upcoming payments {{ outgoing }} exceed the balance."
+```
+
+Whether future payments show up depends on the bank: PSD2 only obliges banks to report booked and pending transactions, and many leave scheduled ones out. Each call spends the account's PSD2 quota for transactions (usually 4 per day per account, separate from the balance quota).
 
 ## Lovelace example
 
