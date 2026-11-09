@@ -14,7 +14,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import CURRENCY_EURO
+
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -22,7 +22,7 @@ from homeassistant.helpers.typing import StateType
 from homeassistant.util import slugify
 from homeassistant.util.dt import utcnow
 
-from .const import CONF_ASPSP_NAME, DEFAULT_SCAN_INTERVAL, DOMAIN
+from .const import CONF_ASPSP_NAME, CONF_CURRENCY_EURO, DEFAULT_SCAN_INTERVAL, DOMAIN
 from .coordinator import EnableBankingConfigEntry, EnableBankingCoordinator
 from .entity import EnableBankingEntity, account_unique_id
 from .models import AccountBalance
@@ -255,7 +255,7 @@ class EnableBankingBalanceSensor(EnableBankingEntity, SensorEntity):
         account = self._current_account
         currency = account.currency.upper() if account is not None else ""
         if not currency or currency == "EUR":
-            return CURRENCY_EURO
+            return CONF_CURRENCY_EURO
         return currency
 
     @property
