@@ -16,6 +16,7 @@ CONF_ASPSP_COUNTRY: Final = "aspsp_country"
 CONF_PSU_TYPE: Final = "psu_type"
 CONF_AUTH_CODE: Final = "auth_code"
 CONF_CONSENT_EXPIRES_AT: Final = "consent_expires_at"
+CONF_CURRENCY_EURO: Final = "EUR"
 
 # Fixed scheduled polling at these local hours > four polls/day, aligned
 # with typical waking life, sitting exactly at the PSD2 4/day cap with
