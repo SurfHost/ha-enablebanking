@@ -4,8 +4,8 @@ Design notes (v0.5.0):
 
 - **Fixed-schedule polling**: polls fire at ``POLL_HOURS`` local time
   (10:00, 14:00, 18:00, 22:00) with a per-entry minute jitter so multiple
-  banks don't burst at ``HH:00:00``. The minute offset is a deterministic
-  hash of ``entry_id`` so it's stable across HA restarts.
+  banks don't burst at ``HH:00:00``. The minute offset is a sha256 digest
+  of ``entry_id`` so it's stable across HA restarts.
 
 - **``update_interval = None``**: we opt out of ``DataUpdateCoordinator``'s
   built-in interval scheduler entirely. All polls come from our
@@ -28,6 +28,7 @@ Design notes (v0.5.0):
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import datetime, timedelta
 from typing import Any
@@ -103,9 +104,19 @@ class EnableBankingCoordinator(DataUpdateCoordinator[EnableBankingData]):
             hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.cache"
         )
         # Deterministic per-entry minute offset in [0, 59] so multiple
-        # banks don't all poll at xx:00:00. Hash of entry_id stays stable
-        # across HA restarts.
-        self._minute_offset: int = abs(hash(entry.entry_id)) % 60
+        # banks don't all poll at xx:00:00.
+        #
+        # sha256, not the builtin hash(): CPython salts str.__hash__ with a
+        # per-process seed (PYTHONHASHSEED), so hash(entry_id) returns a
+        # different value on every HA start. That made the offset move each
+        # restart, and — because most_recent_scheduled_time() rebuilds the
+        # schedule from the *current* offset while last_refresh was written
+        # under the old one — needs_catchup() could decide a slot had been
+        # missed when it had not, spending one of the four daily PSD2 polls
+        # this whole scheduler exists to conserve.
+        self._minute_offset: int = (
+            int.from_bytes(hashlib.sha256(entry.entry_id.encode()).digest()[:8], "big") % 60
+        )
 
     @property
     def minute_offset(self) -> int:
