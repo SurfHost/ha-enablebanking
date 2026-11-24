@@ -3,7 +3,7 @@ name = "ha-enablebanking"
 # Not the shipped version number: custom_components/enablebanking/manifest.json
 # is the single source of truth that HACS and the release-gate CI job read.
 # The gate fails a tag build if these two ever drift apart.
-version = "0.7.0"
+version = "0.7.1"
 description = "Enable Banking account balances for Home Assistant (PSD2 AIS via the Enable Banking aggregator)"
 # 3.14.2, not the 3.13 the sibling repos ask for: every homeassistant release in
 # the range below declares python_requires >=3.14.2, so a looser floor here makes

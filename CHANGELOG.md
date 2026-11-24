@@ -3,6 +3,11 @@
 Releases up to and including 0.6.11 are described in the
 [GitHub release notes](https://github.com/SurfHost/ha-enablebanking/releases).
 
+## [0.7.1] - 2026-11-24
+
+### Changed
+- **Installation through the Home Assistant Marketplace.** Since Home Assistant 2026.11, HACS is built into Home Assistant as the Marketplace. The README now has a Marketplace badge and install steps. An existing HACS installation moves over by itself and keeps receiving updates.
+
 ## [0.7.0] - 2026-11-05
 
 ### Added
